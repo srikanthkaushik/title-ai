@@ -75,6 +75,12 @@
             <artifactId>langchain4j-document-parser-apache-tika</artifactId>
         </dependency>
 
+        <!-- LangGraph4j agent graph -->
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-core</artifactId>
+        </dependency>
+
         <!-- LangChain4j MCP client -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
