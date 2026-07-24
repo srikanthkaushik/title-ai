@@ -7,7 +7,6 @@ import com.marion.dmv.transfer.TransferResponse;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,7 +25,6 @@ import static org.assertj.core.api.Assertions.within;
  *
  * Scoring: reason-before-verdict, SCORE: N on final line (0-10). -1 = unparseable.
  */
-@Disabled("Integration test — requires live LLM + pgvector + ingested corpus")
 @SpringBootTest
 class TransferEvalTest {
 
@@ -157,6 +155,8 @@ class TransferEvalTest {
         if (start >= 0 && end > start) {
             trimmed = trimmed.substring(start, end + 1);
         }
+        // qwen2.5 sometimes emits // comments inside JSON objects; strip them before parsing
+        trimmed = trimmed.replaceAll("//[^\n]*", "");
         return objectMapper.readValue(trimmed, TransferResponse.class);
     }
 
