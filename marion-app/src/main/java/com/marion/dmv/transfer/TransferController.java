@@ -1,5 +1,6 @@
 package com.marion.dmv.transfer;
 
+import com.marion.dmv.mcp.McpToolService;
 import com.marion.dmv.retrieval.RetrievalResult;
 import com.marion.dmv.retrieval.RetrievalService;
 import dev.langchain4j.data.message.SystemMessage;
@@ -13,7 +14,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/transfer")
@@ -23,8 +26,9 @@ public class TransferController {
             You are a Marion DMV title transfer assistant helping an examiner determine requirements
             for an out-of-state vehicle title transfer into Marion.
 
-            You will be given retrieved regulatory documents and, if available, vehicle record data.
-            Use ONLY the provided context — do not use general knowledge about real states or vehicles.
+            You will be given retrieved regulatory documents and, if available, vehicle record data
+            and database lookup results. Use ONLY the provided context — do not use general knowledge
+            about real states or vehicles.
 
             IMPORTANT RULES:
             - Brand equivalency: always consult the Brand Equivalency Guide for the specific origin state.
@@ -37,6 +41,8 @@ public class TransferController {
             - Supervisor referral: required for any active lien, any branded title, any unrecognized
               origin state, or missing origin documentation. When referring, set supervisorReferral
               to true and set taxOwed to null.
+            - DATABASE LOOKUP RESULTS (if provided under that heading) are authoritative system-of-record
+              data. Prefer them over retrieved documents when there is a conflict.
 
             Respond with a JSON object in EXACTLY this format — no markdown, no code fences.
             Start with { and end with }:
@@ -72,38 +78,61 @@ public class TransferController {
 
     private final ChatModel chatModel;
     private final RetrievalService retrievalService;
+    private final McpToolService mcpToolService;
     private final Timer answerTimer;
 
     public TransferController(ChatModel chatModel,
                               RetrievalService retrievalService,
+                              McpToolService mcpToolService,
                               MeterRegistry meterRegistry) {
         this.chatModel = chatModel;
         this.retrievalService = retrievalService;
+        this.mcpToolService = mcpToolService;
         this.answerTimer = Timer.builder("marion.answer")
                 .description("Answer generation time")
                 .tag("node", "answer-generator")
                 .register(meterRegistry);
     }
 
+    // All blocking work (retrieval, MCP tool calls, LLM) runs on boundedElastic.
     // Uses non-streaming ChatModel so the full response is assembled before emitting.
-    // Ollama's streaming API returns tokens without leading spaces (qwen tokenizer behaviour),
-    // which causes words to concatenate. The non-streaming API returns correctly spaced text.
-    // StreamingChatModel is still wired as a bean for the future LangGraph agent graph.
+    // qwen2.5:7b streaming tokens arrive without leading spaces; non-streaming is correct.
     @PostMapping(value = "/query", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> query(@RequestBody TransferRequest request) {
-        List<RetrievalResult> hits = retrievalService.retrieveAndRerank(request.question());
-        String context = buildContext(hits);
-        String userPrompt = buildUserPrompt(request, context);
+        return Mono.fromCallable(() -> {
+            List<RetrievalResult> hits = retrievalService.retrieveAndRerank(request.question());
+            String context = buildContext(hits);
+            Map<String, String> toolData = fetchToolData(request);
+            String userPrompt = buildUserPrompt(request, context, toolData);
 
-        return Mono.fromCallable(() ->
-                answerTimer.record(() ->
-                        chatModel.chat(
-                                List.of(SystemMessage.from(SYSTEM_PROMPT), UserMessage.from(userPrompt))
-                        ).aiMessage().text()
-                )
-        )
+            return answerTimer.record(() ->
+                    chatModel.chat(
+                            List.of(SystemMessage.from(SYSTEM_PROMPT), UserMessage.from(userPrompt))
+                    ).aiMessage().text()
+            );
+        })
         .subscribeOn(Schedulers.boundedElastic())
         .flatMapMany(text -> Flux.just(text, "[DONE]"));
+    }
+
+    private Map<String, String> fetchToolData(TransferRequest req) {
+        Map<String, String> data = new LinkedHashMap<>();
+
+        if (req.vehicleVin() != null && !req.vehicleVin().isBlank()) {
+            mcpToolService.lookupTitleLien(req.vehicleVin())
+                    .ifPresent(r -> data.put("VEHICLE_RECORD", r));
+        }
+        if (req.originState() != null && !req.originState().isBlank()) {
+            mcpToolService.lookupTaxReciprocity(req.originState())
+                    .ifPresent(r -> data.put("TAX_RECIPROCITY", r));
+        }
+        if (req.transferType() != null && !req.transferType().isBlank()
+                && req.county() != null && !req.county().isBlank()) {
+            mcpToolService.lookupFees(req.transferType(), req.county())
+                    .ifPresent(r -> data.put("FEE_SCHEDULE", r));
+        }
+
+        return data;
     }
 
     private String buildContext(List<RetrievalResult> hits) {
@@ -119,9 +148,17 @@ public class TransferController {
         return sb.toString();
     }
 
-    private String buildUserPrompt(TransferRequest req, String context) {
+    private String buildUserPrompt(TransferRequest req, String context, Map<String, String> toolData) {
         StringBuilder sb = new StringBuilder();
         sb.append("RETRIEVED CONTEXT:\n").append(context).append("\n");
+
+        if (!toolData.isEmpty()) {
+            sb.append("DATABASE LOOKUP RESULTS (authoritative — prefer over context if different):\n");
+            toolData.forEach((key, value) ->
+                    sb.append(key).append(": ").append(value).append("\n"));
+            sb.append("\n");
+        }
+
         if (req.vehicleVin() != null) {
             sb.append("VEHICLE VIN: ").append(req.vehicleVin()).append("\n");
         }
