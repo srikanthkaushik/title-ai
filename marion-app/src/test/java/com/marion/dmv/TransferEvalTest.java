@@ -138,6 +138,157 @@ class TransferEvalTest {
                 .isGreaterThanOrEqualTo(7);
     }
 
+    // B2 — Verdana "Rebuilt" → Marion "Rebuilt" (NOT "Reconstructed")
+    // The dangerous distractor: Halloway also uses "Rebuilt" but maps to Marion "Reconstructed".
+    // VIN 1VRD0000001000003 has brand=Rebuilt in the DB so MCP returns it as authoritative data,
+    // making STEP 1 reliable. Requires MCP server running; graceful degradation (MCP down) still
+    // triggers referral from question text since STEP 1 scans for the word "Rebuilt".
+    @Test
+    void b2_verdanaRebuiltBrand_supervisorReferralWithCorrectMarionBrand() throws Exception {
+        String response = callTransfer(new TransferRequest(
+                "What is the examiner required to do when a customer presents a Verdana vehicle title " +
+                "that carries a 'Rebuilt' brand stamp? Which Marion brand equivalent applies?",
+                "1VRD0000001000003", "Verdana", "Marion County", "PURCHASE"
+        ));
+
+        TransferResponse parsed = parseJson(response);
+
+        assertThat(parsed.supervisorReferral())
+                .as("Branded title (Verdana 'Rebuilt') must trigger supervisorReferral=true")
+                .isTrue();
+        assertThat(parsed.referralForm()).isEqualTo("TR-10");
+        assertThat(parsed.checklist()).isNull();
+
+        // Judge specifically checks: Verdana "Rebuilt" → Marion "Rebuilt", not "Reconstructed"
+        int score = judge(
+                "For a Verdana-titled vehicle with brand 'Rebuilt': what Marion brand applies and what does the examiner do? " +
+                "Verdana 'Rebuilt' maps to Marion 'Rebuilt'. Halloway 'Rebuilt' maps to Marion 'Reconstructed' — these are different. " +
+                "Score 10 if the response triggers supervisor referral AND states the Marion brand is 'Rebuilt'. " +
+                "Score 4 or lower if it says 'Reconstructed' (wrong state's mapping) or skips the referral.",
+                response
+        );
+        assertThat(score)
+                .as("Judge score for B2 (expected >= 7, got %d). Response: %s", score, response)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // B3 — Halloway "Rebuilt" → Marion "Reconstructed" (NOT "Rebuilt" like Verdana's mapping)
+    @Test
+    void b3_hallowayRebuiltBrand_supervisorReferralWithDifferentMarionBrand() throws Exception {
+        String response = callTransfer(new TransferRequest(
+                "A customer presents a Halloway title with the brand 'Rebuilt'. " +
+                "What brand should appear on the Marion title?",
+                "1HAL0000001000001", "Halloway", "Marion County", "RELOCATION"
+        ));
+
+        TransferResponse parsed = parseJson(response);
+
+        assertThat(parsed.supervisorReferral())
+                .as("Branded title must trigger supervisorReferral=true")
+                .isTrue();
+        assertThat(parsed.referralForm()).isEqualTo("TR-10");
+
+        // Judge specifically checks: Halloway "Rebuilt" → Marion "Reconstructed", not "Rebuilt"
+        int score = judge(
+                "For a Halloway-titled vehicle with brand 'Rebuilt': what Marion brand applies? " +
+                "Halloway 'Rebuilt' maps to Marion 'Reconstructed' (NOT 'Rebuilt'). " +
+                "Verdana 'Rebuilt' maps to Marion 'Rebuilt' — but this is a Halloway title, not Verdana. " +
+                "Score 10 if the response correctly identifies the Marion brand as 'Reconstructed'. " +
+                "Score 4 or lower if it says 'Rebuilt' (which would be applying Verdana's mapping by mistake).",
+                response
+        );
+        assertThat(score)
+                .as("Judge score for B3 (expected >= 7, got %d). Response: %s", score, response)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // F2 — Verdana ELT with active lien → supervisor referral; lien must be released electronically
+    @Test
+    void f2_verdanaEltActiveLien_supervisorReferral() throws Exception {
+        String response = callTransfer(new TransferRequest(
+                "A customer's vehicle is titled in Verdana as an ELT record and the record shows " +
+                "an active lien. What is the process?",
+                "1VRD0000001000002", "Verdana", "Marion County", "RELOCATION"
+        ));
+
+        TransferResponse parsed = parseJson(response);
+
+        assertThat(parsed.supervisorReferral())
+                .as("ELT active lien must trigger supervisorReferral=true")
+                .isTrue();
+        assertThat(parsed.referralForm()).isEqualTo("TR-10");
+        assertThat(parsed.checklist()).isNull();
+        assertThat(parsed.taxOwed()).isNull();
+        assertThat(parsed.conditionalChecklist()).isNotNull().isNotEmpty();
+
+        int score = judge(
+                "What is the process for a Verdana ELT-titled vehicle with an active lien?",
+                response
+        );
+        assertThat(score)
+                .as("Judge score for F2 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // F3 — Halloway "Junk" brand → supervisor referral; Halloway "Junk" = Marion "Salvage"
+    @Test
+    void f3_hallowayJunkBrand_supervisorReferralWithSalvageEquivalent() throws Exception {
+        String response = callTransfer(new TransferRequest(
+                "A customer presents a Halloway paper title with the brand 'Junk'. " +
+                "What happens and what brand appears on the Marion title?",
+                null, "Halloway", "Marion County", "PURCHASE"
+        ));
+
+        TransferResponse parsed = parseJson(response);
+
+        assertThat(parsed.supervisorReferral())
+                .as("Branded title (Halloway 'Junk') must trigger supervisorReferral=true")
+                .isTrue();
+        assertThat(parsed.referralForm()).isEqualTo("TR-10");
+        assertThat(parsed.checklist()).isNull();
+
+        // Halloway "Junk" → Marion "Salvage" per brand equivalency guide
+        int score = judge(
+                "For a Halloway-titled vehicle with brand 'Junk': what does the examiner do and what Marion brand applies? " +
+                "Halloway 'Junk' maps to Marion 'Salvage'. A supervisor referral (TR-10) is required. " +
+                "Score 10 if the response identifies supervisor referral AND states the Marion brand is 'Salvage'. " +
+                "Score lower if the Marion brand is omitted or wrong.",
+                response
+        );
+        assertThat(score)
+                .as("Judge score for F3 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // D2 — 2003 vehicle in Marion County (metro): REQUIRED under current 25-year rule.
+    // Under superseded 20-year rule a 23-year-old vehicle would have been exempt — this catches
+    // the system using the wrong version of Admin Rule 2.4.
+    @Test
+    void d2_2003VehicleMetroCounty_emissionsRequiredUnderCurrentRule() throws Exception {
+        String response = callTransfer(new TransferRequest(
+                "A customer is registering a 2003 model year vehicle in Marion County. " +
+                "Is emissions testing required?",
+                null, "Crestwood", "Marion County", "PURCHASE"
+        ));
+
+        TransferResponse parsed = parseJson(response);
+        assertThat(parsed.supervisorReferral()).isFalse();
+
+        // 2003 is 23 years old in 2026; current rule exempts at 25 years → REQUIRED.
+        // Superseded rule exempted at 20 years → would incorrectly say exempt.
+        int score = judge(
+                "Is emissions testing required for a 2003 model year vehicle registering in Marion County (metro)? " +
+                "Marion's current rule (Admin Rule 2.4) exempts vehicles that are 25 or more years old. " +
+                "A 2003 vehicle is 23 years old in 2026 — less than 25 — so emissions ARE required. " +
+                "Score 10 if the response correctly says emissions are required. " +
+                "Score 3 or lower if it says exempt (which would mean it used the superseded 20-year rule).",
+                response
+        );
+        assertThat(score)
+                .as("Judge score for D2 (expected >= 7, got %d). Response: %s", score, response)
+                .isGreaterThanOrEqualTo(7);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private String callTransfer(TransferRequest request) {
@@ -155,7 +306,8 @@ class TransferEvalTest {
         if (start >= 0 && end > start) {
             trimmed = trimmed.substring(start, end + 1);
         }
-        // qwen2.5 sometimes emits // comments inside JSON objects; strip them before parsing
+        // qwen2.5 emits both // line comments and /* */ block comments inside JSON; strip both
+        trimmed = trimmed.replaceAll("(?s)/\\*.*?\\*/", "");
         trimmed = trimmed.replaceAll("//[^\n]*", "");
         return objectMapper.readValue(trimmed, TransferResponse.class);
     }

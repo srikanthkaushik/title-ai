@@ -17,6 +17,8 @@ import org.springframework.context.annotation.Configuration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.bsc.langgraph4j.GraphDefinition.END;
 import static org.bsc.langgraph4j.GraphDefinition.START;
@@ -34,19 +36,24 @@ public class TransferAgentGraph {
             and database lookup results. Use ONLY the provided context — do not use general knowledge
             about real states or vehicles.
 
-            IMPORTANT RULES:
-            - Brand equivalency: always consult the Brand Equivalency Guide for the specific origin state.
+            STEP 1 — BRAND AND LIEN CHECK (do this before anything else):
+            Scan the question AND any DATABASE LOOKUP RESULTS for these trigger words:
+              Active lien, unreleased lien, lien holder → supervisorReferral = true
+              Rebuilt, Reconstructed, Salvage, Junk, Flood, Water Damage, Odometer, Lemon Law,
+              Salvage Rebuilt, or ANY other brand stamp → supervisorReferral = true
+            If any trigger is found, set supervisorReferral=true, referralForm="TR-10",
+            checklist=null, taxOwed=null, and populate conditionalChecklist. Stop normal processing.
+
+            STEP 2 — NORMAL PROCESSING (only if Step 1 found no triggers):
+            - Brand equivalency: consult the Brand Equivalency Guide for the specific origin state.
               Two states can use the same brand word with different Marion equivalents.
             - Tax computation: Marion rate is 5.5%. Apply reciprocity credit only if origin state has
               an agreement. Pembrook has NO reciprocity.
             - Emissions: required if registration county is metro (Marion, Riverside, Capital) AND
               model year is less than 25 years old (relative to current year). Whether the origin
               state has an emissions program is irrelevant.
-            - Supervisor referral: required for any active lien, any branded title, any unrecognized
-              origin state, or missing origin documentation. When referring, set supervisorReferral
-              to true and set taxOwed to null.
-            - DATABASE LOOKUP RESULTS (if provided under that heading) are authoritative system-of-record
-              data. Prefer them over retrieved documents when there is a conflict.
+            - DATABASE LOOKUP RESULTS (if provided) are authoritative. Prefer them over retrieved
+              documents when there is a conflict.
 
             Respond with a JSON object in EXACTLY this format — no markdown, no code fences, no comments.
             Start with { and end with }:
@@ -155,6 +162,8 @@ public class TransferAgentGraph {
         return sb.toString();
     }
 
+    private static final Pattern BRAND_PATTERN = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
+
     private static String buildUserPrompt(TransferAgentState state) {
         StringBuilder sb = new StringBuilder();
         sb.append("RETRIEVED CONTEXT:\n").append(state.context()).append("\n");
@@ -163,6 +172,13 @@ public class TransferAgentGraph {
         if (!toolData.isBlank()) {
             sb.append("DATABASE LOOKUP RESULTS (authoritative — prefer over context if different):\n");
             sb.append(toolData).append("\n");
+
+            // Explicitly surface brand field so STEP 1 fires reliably
+            Matcher m = BRAND_PATTERN.matcher(toolData);
+            if (m.find()) {
+                sb.append("*** BRAND STAMP DETECTED IN VEHICLE RECORD: \"").append(m.group(1))
+                  .append("\" — This is a BRANDED TITLE. Per STEP 1: supervisorReferral=true REQUIRED. ***\n");
+            }
         }
 
         state.vehicleVin().ifPresent(v -> sb.append("VEHICLE VIN: ").append(v).append("\n"));

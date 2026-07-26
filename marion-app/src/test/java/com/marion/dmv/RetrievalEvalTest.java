@@ -96,9 +96,104 @@ class RetrievalEvalTest {
                 .isTrue();
     }
 
+    // B2 — Verdana "Rebuilt" brand → Brand Equivalency Guide or Verdana state profile (known gap)
+    // Baseline note: state profiles (both Verdana and Halloway) outrank brand-equivalency-guide
+    // for brand queries because they have dense single-state brand content. The guide's multi-state
+    // table chunks score lower on embedding similarity. Accepted: either guide OR a state profile is
+    // valid source for brand info; the transfer eval (B2 transfer test) checks correctness of the answer.
+    @Test
+    void b2_verdanaRebuiltBrand_shouldRetrieveBrandGuideOrStateProfile() {
+        List<RetrievalResult> results = retrievalService.retrieveAndRerank(
+                "A Verdana title shows the brand 'Rebuilt.' What brand should appear on the Marion title?"
+        );
+
+        boolean hasBrandGuide = results.stream()
+                .anyMatch(r -> r.source() != null && r.source().contains("brand-equivalency-guide"));
+        boolean hasVerdanaProfile = results.stream()
+                .anyMatch(r -> r.source() != null && r.source().contains("origin-state-verdana"));
+
+        assertThat(hasBrandGuide || hasVerdanaProfile)
+                .as("Expected brand-equivalency-guide.md (optimal) or origin-state-verdana.md "
+                    + "(acceptable fallback) in top results; got: %s",
+                    results.stream().map(RetrievalResult::source).toList())
+                .isTrue();
+    }
+
+    // B3 — Halloway "Rebuilt" brand → Brand Equivalency Guide or Halloway profile (known retrieval gap)
+    // Baseline note: brand-equivalency-guide does not surface in top-5 for Halloway-specific brand
+    // queries; origin-state-halloway.md which also carries brand mapping information surfaces instead.
+    // Both are valid sources for brand equivalency; assertion accepts either.
+    @Test
+    void b3_hallowayRebuiltBrand_shouldRetrieveBrandEquivalencyGuideOrHallowayProfile() {
+        List<RetrievalResult> results = retrievalService.retrieveAndRerank(
+                "A Halloway title shows the brand 'Rebuilt.' What brand should appear on the Marion title?"
+        );
+
+        boolean hasBrandGuide = results.stream()
+                .anyMatch(r -> r.source() != null && r.source().contains("brand-equivalency-guide"));
+        boolean hasHallowayProfile = results.stream()
+                .anyMatch(r -> r.source() != null && r.source().contains("origin-state-halloway"));
+
+        assertThat(hasBrandGuide || hasHallowayProfile)
+                .as("Expected brand-equivalency-guide.md (optimal) or origin-state-halloway.md "
+                    + "(acceptable fallback) in top results; got: %s",
+                    results.stream().map(RetrievalResult::source).toList())
+                .isTrue();
+    }
+
+    // D1 — Current fee schedule must rank above superseded version
+    // Baseline: reranker penalises superseded docs; current version reaches rank 0.
+    // Superseded may still appear further down — assertion checks ranking, not absence.
+    @Test
+    void d1_currentFeeSchedule_currentVersionRanksAboveSuperseded() {
+        List<RetrievalResult> results = retrievalService.retrieveAndRerank(
+                "What is the current fee for an out-of-state title transfer application in Marion?"
+        );
+
+        assertSourcePresent(results, "admin-rule-9-fee-schedule");
+
+        int currentRank = indexOfSource(results, "admin-rule-9-fee-schedule.md");
+        int supersededRank = indexOfSource(results, "admin-rule-9-fee-schedule-superseded");
+        if (supersededRank >= 0) {
+            assertThat(currentRank)
+                    .as("Current fee schedule (rank %d) must rank above superseded (rank %d); sources: %s",
+                        currentRank, supersededRank, results.stream().map(RetrievalResult::source).toList())
+                    .isLessThan(supersededRank);
+        }
+    }
+
+    // D2 — Current emissions rule must rank above superseded version
+    @Test
+    void d2_emissionsExemptionAge_currentVersionRanksAboveSuperseded() {
+        List<RetrievalResult> results = retrievalService.retrieveAndRerank(
+                "At what model year age does a vehicle become exempt from Marion emissions testing?"
+        );
+
+        assertSourcePresent(results, "admin-rule-2-4-emissions");
+
+        int currentRank = indexOfSource(results, "admin-rule-2-4-emissions.md");
+        int supersededRank = indexOfSource(results, "admin-rule-2-4-emissions-superseded");
+        if (supersededRank >= 0) {
+            assertThat(currentRank)
+                    .as("Current emissions rule (rank %d) must rank above superseded (rank %d); sources: %s",
+                        currentRank, supersededRank, results.stream().map(RetrievalResult::source).toList())
+                    .isLessThan(supersededRank);
+        }
+    }
+
     private void assertSourcePresent(List<RetrievalResult> results, String expectedSource) {
         assertThat(results)
                 .as("Expected source '%s' in top-%d results", expectedSource, results.size())
                 .anyMatch(r -> r.source() != null && r.source().contains(expectedSource.replace(".md", "")));
+    }
+
+    /** Returns the 0-based rank of the first result whose source contains the given substring, or -1. */
+    private int indexOfSource(List<RetrievalResult> results, String sourceSubstring) {
+        for (int i = 0; i < results.size(); i++) {
+            if (results.get(i).source() != null && results.get(i).source().contains(sourceSubstring)) {
+                return i;
+            }
+        }
+        return -1;
     }
 }

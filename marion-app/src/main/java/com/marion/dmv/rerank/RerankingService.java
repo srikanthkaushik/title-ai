@@ -28,6 +28,11 @@ public class RerankingService {
             Then, on the FINAL line, output exactly: SCORE: N
             where N is an integer from 0 to 10 (10 = highly relevant, 0 = not relevant).
             Output nothing after the SCORE line.
+
+            IMPORTANT: If the excerpt contains text indicating it is superseded, outdated, repealed,
+            or replaced by a later version (e.g. "Superseded by", "This rule has been replaced",
+            "Pre-2023", "Effective prior to"), reduce the score by 4 points minimum, even if the
+            content is otherwise relevant. Examiners must use the current rule, not old versions.
             """;
 
     private final ChatModel chatModel;

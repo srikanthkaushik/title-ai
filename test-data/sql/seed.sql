@@ -48,6 +48,11 @@ INSERT INTO vehicles VALUES
  NULL, 'Toyota', 'Camry', 2020, 'Sedan', 3400, 38100,
  '2026-12-01', 'ELT active lien — triggers supervisor referral'),
 
+-- 2b. Verdana ELT — no lien — "Rebuilt" brand → exception (B2 eval scenario)
+('1VRD0000001000003', 'Verdana', 'ELT', 'NONE', NULL, NULL,
+ 'Rebuilt', 'Mazda', 'CX-5', 2018, 'SUV', 3900, 44200,
+ '2027-05-15', 'Verdana Rebuilt brand (= Marion Rebuilt) — branded title supervisor referral (B2 eval)'),
+
 -- 3. Crestwood paper — clean, no lien — base happy path (A1 scenario)
 ('1CST0000001000001', 'Crestwood', 'PAPER', 'NONE', NULL, NULL,
  NULL, 'Ford', 'F-150', 2018, 'Pickup', 5500, 71200,
