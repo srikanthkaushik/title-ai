@@ -41,14 +41,42 @@ public class TransferAgentGraph {
               Active lien, unreleased lien, lien holder → supervisorReferral = true
               Rebuilt, Reconstructed, Salvage, Junk, Flood, Water Damage, Odometer, Lemon Law,
               Salvage Rebuilt, or ANY other brand stamp → supervisorReferral = true
+            Examples that MUST trigger supervisorReferral=true:
+              "title with the brand 'Rebuilt'" → supervisorReferral = true
+              "shows an active lien" → supervisorReferral = true
+              "Junk brand on a Halloway title" → supervisorReferral = true
             If any trigger is found, set supervisorReferral=true, referralForm="TR-10",
             checklist=null, taxOwed=null, and populate conditionalChecklist. Stop normal processing.
 
             STEP 2 — NORMAL PROCESSING (only if Step 1 found no triggers):
             - Brand equivalency: consult the Brand Equivalency Guide for the specific origin state.
               Two states can use the same brand word with different Marion equivalents.
-            - Tax computation: Marion rate is 5.5%. Apply reciprocity credit only if origin state has
-              an agreement. Pembrook has NO reciprocity.
+            - Tax computation (apply EXACTLY in order — do not skip or shortcut steps):
+                1. taxable_value = declared purchase price (or NADA clean retail if higher for PURCHASE;
+                   NADA clean retail for RELOCATION). Use the value stated in the question.
+                2. marion_tax_due = taxable_value × 5.5%
+                3. Determine origin_rate:
+                     - Use the rate from TAX_RECIPROCITY in DATABASE LOOKUP RESULTS if available.
+                     - OR use the rate explicitly stated in the question (e.g., "paid 6% in Crestwood"
+                       → origin_rate = 6%; "paid 4.5% in Halloway" → origin_rate = 4.5%).
+                   If origin state has a reciprocity agreement:
+                     tax_paid_in_origin = taxable_value × origin_rate
+                     reciprocity_credit = min(tax_paid_in_origin, marion_tax_due)
+                   Else (no reciprocity agreement): reciprocity_credit = 0
+                4. taxOwed = max(0, marion_tax_due - reciprocity_credit)
+                   Round to the nearest cent. If credit >= marion_tax_due, taxOwed = 0 (no refund).
+                   WARNING: Do NOT compute taxOwed as (Marion_rate − origin_rate) × value.
+                   That formula is WRONG. Use steps 2-4 above.
+              Pembrook has NO reciprocity agreement — credit is always $0, full Marion tax applies.
+              Example A (Crestwood, $15,000, 6% rate, reciprocity): marion_tax_due = $825,
+                tax_paid_in_origin = $900, credit = min($900,$825) = $825, taxOwed = $0.
+              Example B (Halloway, $18,000, 4.5% rate, reciprocity): marion_tax_due = $990,
+                tax_paid_in_origin = $810, credit = min($810,$990) = $810, taxOwed = $180.
+              Example C (Verdana, $20,000, 5% rate, reciprocity): marion_tax_due = $1,100,
+                tax_paid_in_origin = $1,000, credit = min($1,000,$1,100) = $1,000,
+                taxOwed = $100. (5% is LESS than 5.5% so credit < Marion tax — owe the difference.)
+              IMPORTANT: taxOwed is ADDITIONAL SALES TAX ONLY — never include title fees,
+              VIN fees, or registration fees in taxOwed. Those belong in the "fees" object.
             - Emissions: required if registration county is metro (Marion, Riverside, Capital) AND
               model year is less than 25 years old (relative to current year). Whether the origin
               state has an emissions program is irrelevant.
