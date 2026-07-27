@@ -10,7 +10,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -142,24 +141,32 @@ public class TransferController {
     }
 
     // All blocking work (retrieval, MCP tool calls, LLM) runs on boundedElastic.
-    // Uses non-streaming ChatModel so the full response is assembled before emitting.
-    // qwen2.5:7b streaming tokens arrive without leading spaces; non-streaming is correct.
-    @PostMapping(value = "/query", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> query(@RequestBody TransferRequest request) {
+    // Uses non-streaming ChatModel so the full response is assembled before parsing.
+    @PostMapping(value = "/query", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<TransferResponse> query(@RequestBody TransferRequest request) {
         return Mono.fromCallable(() -> {
             List<RetrievalResult> hits = retrievalService.retrieveAndRerank(request.question());
             String context = buildContext(hits);
             Map<String, String> toolData = fetchToolData(request);
-            String userPrompt = buildUserPrompt(request, context, toolData);
 
-            return answerTimer.record(() ->
+            String raw = answerTimer.record(() ->
                     chatModel.chat(
-                            List.of(SystemMessage.from(SYSTEM_PROMPT), UserMessage.from(userPrompt))
+                            List.of(SystemMessage.from(SYSTEM_PROMPT),
+                                    UserMessage.from(buildUserPrompt(request, context, toolData, null)))
                     ).aiMessage().text()
             );
+
+            try {
+                return TransferResponseParser.parse(raw);
+            } catch (IllegalArgumentException firstError) {
+                String retryRaw = chatModel.chat(
+                        List.of(SystemMessage.from(SYSTEM_PROMPT),
+                                UserMessage.from(buildUserPrompt(request, context, toolData, firstError.getMessage())))
+                ).aiMessage().text();
+                return TransferResponseParser.parse(retryRaw);
+            }
         })
-        .subscribeOn(Schedulers.boundedElastic())
-        .flatMapMany(text -> Flux.just(text, "[DONE]"));
+        .subscribeOn(Schedulers.boundedElastic());
     }
 
     private Map<String, String> fetchToolData(TransferRequest req) {
@@ -198,7 +205,7 @@ public class TransferController {
     private static final Pattern BRAND_PATTERN = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern RATE_PATTERN = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
 
-    private String buildUserPrompt(TransferRequest req, String context, Map<String, String> toolData) {
+    private String buildUserPrompt(TransferRequest req, String context, Map<String, String> toolData, String parseError) {
         StringBuilder sb = new StringBuilder();
         sb.append("RETRIEVED CONTEXT:\n").append(context).append("\n");
 
@@ -242,6 +249,13 @@ public class TransferController {
             sb.append("TRANSFER TYPE: ").append(req.transferType()).append("\n");
         }
         sb.append("\nQUESTION: ").append(req.question());
+
+        if (parseError != null && !parseError.isBlank()) {
+            sb.append("\n\n[RETRY] Your previous response could not be parsed. Error: ")
+              .append(parseError)
+              .append("\nOutput ONLY a JSON object — no markdown, no code fences, no // comments. ")
+              .append("Start immediately with { and end with }.");
+        }
         return sb.toString();
     }
 }

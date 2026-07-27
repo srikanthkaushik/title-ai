@@ -50,4 +50,9 @@ public class TransferAgentState extends AgentState {
     public int cycleCount() {
         return this.<Integer>value("cycleCount").orElse(0);
     }
+
+    /** Parse error message from the last GENERATE cycle; empty string means parse succeeded. */
+    public String parseError() {
+        return this.<String>value("parseError").orElse("");
+    }
 }

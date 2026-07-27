@@ -1,10 +1,11 @@
 package com.marion.dmv.agent;
 
 import com.marion.dmv.transfer.TransferRequest;
+import com.marion.dmv.transfer.TransferResponse;
+import com.marion.dmv.transfer.TransferResponseParser;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -21,19 +22,19 @@ public class TransferAgentController {
         this.graph = graph;
     }
 
-    @PostMapping(value = "/query/agent", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> queryAgent(@RequestBody TransferRequest request) {
+    @PostMapping(value = "/query/agent", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<TransferResponse> queryAgent(@RequestBody TransferRequest request) {
         Map<String, Object> inputs = buildInputs(request);
 
         return Mono.fromCallable(() -> {
             var result = graph.invoke(inputs);
-            return result
+            String draftAnswer = result
                     .map(TransferAgentState::draftAnswer)
                     .filter(s -> !s.isBlank())
-                    .orElse("{\"error\":\"Agent graph produced no output\"}");
+                    .orElseThrow(() -> new IllegalStateException("Agent graph produced no output"));
+            return TransferResponseParser.parse(draftAnswer);
         })
-        .subscribeOn(Schedulers.boundedElastic())
-        .flatMapMany(text -> Flux.just(text, "[DONE]"));
+        .subscribeOn(Schedulers.boundedElastic());
     }
 
     private static Map<String, Object> buildInputs(TransferRequest req) {

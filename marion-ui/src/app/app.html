@@ -1,0 +1,256 @@
+<nav class="navbar navbar-dark bg-dark">
+  <div class="container-xl">
+    <span class="navbar-brand fw-semibold">Marion DMV — Title Transfer Assistant</span>
+    <span class="navbar-text text-secondary small">Examiner Workstation</span>
+  </div>
+</nav>
+
+<div class="container-xl py-4">
+  <div class="row g-4">
+
+    <!-- ── Query Form ─────────────────────────────────────────────────────── -->
+    <div class="col-lg-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-light fw-semibold">Query</div>
+        <div class="card-body">
+          <form (ngSubmit)="submit()">
+
+            <div class="mb-3">
+              <label class="form-label fw-medium">
+                Scenario <span class="text-danger">*</span>
+              </label>
+              <textarea
+                class="form-control"
+                rows="6"
+                [(ngModel)]="question"
+                name="question"
+                placeholder="Describe the transfer scenario — title type, lien status, origin state, purchase price, etc."
+                required>
+              </textarea>
+            </div>
+
+            <div class="row g-2 mb-3">
+              <div class="col-6">
+                <label class="form-label fw-medium">Origin State</label>
+                <select class="form-select" [(ngModel)]="originState" name="originState">
+                  <option value="">— any —</option>
+                  @for (s of originStates; track s) {
+                    <option [value]="s">{{ s }}</option>
+                  }
+                </select>
+              </div>
+              <div class="col-6">
+                <label class="form-label fw-medium">Transfer Type</label>
+                <select class="form-select" [(ngModel)]="transferType" name="transferType">
+                  <option value="">— any —</option>
+                  @for (t of transferTypes; track t) {
+                    <option [value]="t">{{ t }}</option>
+                  }
+                </select>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label fw-medium">Registration County</label>
+              <select class="form-select" [(ngModel)]="county" name="county">
+                <option value="">— any —</option>
+                @for (c of counties; track c) {
+                  <option [value]="c">{{ c }}</option>
+                }
+              </select>
+            </div>
+
+            <div class="mb-4">
+              <label class="form-label fw-medium">
+                Vehicle VIN
+                <span class="text-muted fw-normal small">(optional — triggers DB lookup)</span>
+              </label>
+              <input
+                type="text"
+                class="form-control font-monospace text-uppercase"
+                [(ngModel)]="vehicleVin"
+                name="vehicleVin"
+                placeholder="e.g. 1VRD0000001000001"
+                maxlength="17">
+            </div>
+
+            <button
+              type="submit"
+              class="btn btn-primary w-100"
+              [disabled]="loading() || !question.trim()">
+              @if (loading()) {
+                <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                Analyzing&hellip;
+              } @else {
+                Analyze Transfer
+              }
+            </button>
+
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Response Panel ─────────────────────────────────────────────────── -->
+    <div class="col-lg-8">
+
+      @if (!response() && !loading() && !errorMessage()) {
+        <div class="d-flex align-items-center justify-content-center h-100 text-muted">
+          <div class="text-center py-5">
+            <div class="display-6 mb-2">&#9878;</div>
+            <p>Enter a scenario and click <strong>Analyze Transfer</strong> to begin.</p>
+          </div>
+        </div>
+      }
+
+      @if (errorMessage()) {
+        <div class="alert alert-danger">
+          <strong>Error:</strong> {{ errorMessage() }}
+        </div>
+      }
+
+      @if (response(); as res) {
+
+        <!-- Status banner -->
+        @if (res.supervisorReferral) {
+          <div class="alert alert-danger d-flex align-items-start gap-3 mb-3">
+            <div class="fs-4 mt-1">&#9888;</div>
+            <div>
+              <h5 class="alert-heading mb-1">Supervisor Referral Required</h5>
+              @if (res.referralForm) {
+                <div><strong>Form:</strong> {{ res.referralForm }}</div>
+              }
+              @if (res.referralReason) {
+                <div><strong>Reason:</strong> {{ res.referralReason }}</div>
+              }
+            </div>
+          </div>
+        } @else {
+          <div class="alert alert-success mb-3">
+            &#10003; Transfer can proceed — no supervisor escalation required.
+          </div>
+        }
+
+        <div class="row g-3">
+
+          <!-- Required Documents -->
+          @if (res.checklist) {
+            <div class="col-12">
+              <div class="card shadow-sm">
+                <div class="card-header fw-semibold">Required Documents</div>
+                <ul class="list-group list-group-flush">
+                  @for (item of res.checklist; track $index) {
+                    <li class="list-group-item py-2">{{ item }}</li>
+                  }
+                </ul>
+              </div>
+            </div>
+          }
+
+          <!-- Conditional Checklist -->
+          @if (res.conditionalChecklist) {
+            <div class="col-12">
+              <div class="card shadow-sm border-warning">
+                <div class="card-header fw-semibold text-warning-emphasis bg-warning-subtle">
+                  Conditional Checklist (once supervisor resolves exception)
+                </div>
+                @if (res.conditionalNote) {
+                  <div class="card-body py-2">
+                    <p class="text-muted small mb-0">{{ res.conditionalNote }}</p>
+                  </div>
+                }
+                <ul class="list-group list-group-flush">
+                  @for (item of res.conditionalChecklist; track $index) {
+                    <li class="list-group-item py-2">{{ item }}</li>
+                  }
+                </ul>
+              </div>
+            </div>
+          }
+
+          <!-- Fees -->
+          @if (res.fees) {
+            <div class="col-sm-6">
+              <div class="card shadow-sm h-100">
+                <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+                  Fees Due to DMV
+                  <span class="badge bg-primary">
+                    ${{ res.fees.totalToDMV | number:'1.2-2' }}
+                  </span>
+                </div>
+                <div class="card-body p-0">
+                  <table class="table table-sm mb-0">
+                    <tbody>
+                      @for (e of feeEntries; track $index) {
+                        <tr>
+                          <td class="ps-3 text-muted">{{ e.label }}</td>
+                          <td class="pe-3 text-end">${{ e.value | number:'1.2-2' }}</td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          }
+
+          <!-- Tax Owed -->
+          @if (res.taxOwed !== null && res.taxOwed !== undefined) {
+            <div class="col-sm-6">
+              <div class="card shadow-sm h-100">
+                <div class="card-header fw-semibold">Additional Sales Tax</div>
+                <div class="card-body d-flex align-items-center justify-content-center">
+                  <span
+                    class="display-6 fw-bold"
+                    [class.text-danger]="res.taxOwed > 0"
+                    [class.text-success]="res.taxOwed === 0">
+                    ${{ res.taxOwed | number:'1.2-2' }}
+                  </span>
+                </div>
+                @if (res.taxOwed === 0) {
+                  <div class="card-footer text-muted small text-center">
+                    Reciprocity credit covers full Marion tax
+                  </div>
+                }
+              </div>
+            </div>
+          }
+
+          <!-- Reasoning (collapsible) -->
+          <div class="col-12">
+            <div class="card shadow-sm">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="fw-semibold">Reasoning</span>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-outline-secondary"
+                  (click)="showReasoning.set(!showReasoning())">
+                  {{ showReasoning() ? 'Hide' : 'Show' }}
+                </button>
+              </div>
+              @if (showReasoning()) {
+                <div class="card-body">
+                  <p class="mb-0 reasoning-text">{{ res.reasoning }}</p>
+                </div>
+              }
+            </div>
+          </div>
+
+          <!-- Sources -->
+          @if (res.sources?.length) {
+            <div class="col-12">
+              <p class="text-muted small mb-0">
+                <strong>Sources: </strong>
+                @for (src of res.sources; track $index) {
+                  <span class="badge bg-light text-dark border me-1 mb-1">{{ src }}</span>
+                }
+              </p>
+            </div>
+          }
+
+        </div>
+      }
+    </div>
+
+  </div>
+</div>

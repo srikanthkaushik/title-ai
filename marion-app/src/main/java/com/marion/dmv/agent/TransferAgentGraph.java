@@ -3,9 +3,12 @@ package com.marion.dmv.agent;
 import com.marion.dmv.mcp.McpToolService;
 import com.marion.dmv.retrieval.RetrievalResult;
 import com.marion.dmv.retrieval.RetrievalService;
+import com.marion.dmv.transfer.TransferResponseParser;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.bsc.langgraph4j.CompileConfig;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphDefinition;
@@ -14,6 +17,7 @@ import org.bsc.langgraph4j.StateGraph;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -131,46 +135,64 @@ public class TransferAgentGraph {
     public CompiledGraph<TransferAgentState> compiledTransferGraph(
             RetrievalService retrievalService,
             McpToolService mcpToolService,
-            ChatModel chatModel) throws GraphStateException {
+            ChatModel chatModel,
+            MeterRegistry meterRegistry) throws GraphStateException {
+
+        Timer retrieveTimer  = Timer.builder("marion.agent.node").tag("node", "retrieve").register(meterRegistry);
+        Timer toolFetchTimer = Timer.builder("marion.agent.node").tag("node", "tool-fetch").register(meterRegistry);
+        Timer generateTimer  = Timer.builder("marion.agent.node").tag("node", "generate").register(meterRegistry);
 
         CompiledGraph<TransferAgentState> compiled = new StateGraph<>(TransferAgentState::new)
 
-                .addNode("retrieve", node_async(state -> {
-                    List<RetrievalResult> hits = retrievalService.retrieveAndRerank(state.question());
-                    return Map.of("context", buildContext(hits));
-                }))
+                .addNode("retrieve", node_async(state ->
+                    retrieveTimer.record(() -> {
+                        List<RetrievalResult> hits = retrievalService.retrieveAndRerank(state.question());
+                        return Map.of("context", buildContext(hits));
+                    })
+                ))
 
-                .addNode("tool_fetch", node_async(state -> {
-                    Map<String, String> toolData = new LinkedHashMap<>();
-                    state.vehicleVin()
-                            .flatMap(mcpToolService::lookupTitleLien)
-                            .ifPresent(r -> toolData.put("VEHICLE_RECORD", r));
-                    state.originState()
-                            .flatMap(mcpToolService::lookupTaxReciprocity)
-                            .ifPresent(r -> toolData.put("TAX_RECIPROCITY", r));
-                    if (state.transferType().isPresent() && state.county().isPresent()) {
-                        mcpToolService.lookupFees(state.transferType().get(), state.county().get())
-                                .ifPresent(r -> toolData.put("FEE_SCHEDULE", r));
-                    }
-                    return Map.of("toolData", formatToolData(toolData));
-                }))
+                .addNode("tool_fetch", node_async(state ->
+                    toolFetchTimer.record(() -> {
+                        Map<String, String> toolData = new LinkedHashMap<>();
+                        state.vehicleVin()
+                                .flatMap(mcpToolService::lookupTitleLien)
+                                .ifPresent(r -> toolData.put("VEHICLE_RECORD", r));
+                        state.originState()
+                                .flatMap(mcpToolService::lookupTaxReciprocity)
+                                .ifPresent(r -> toolData.put("TAX_RECIPROCITY", r));
+                        if (state.transferType().isPresent() && state.county().isPresent()) {
+                            mcpToolService.lookupFees(state.transferType().get(), state.county().get())
+                                    .ifPresent(r -> toolData.put("FEE_SCHEDULE", r));
+                        }
+                        return Map.of("toolData", formatToolData(toolData));
+                    })
+                ))
 
-                .addNode("generate", node_async(state -> {
-                    String userPrompt = buildUserPrompt(state);
-                    String answer = chatModel.chat(
-                            List.of(SystemMessage.from(SYSTEM_PROMPT), UserMessage.from(userPrompt))
-                    ).aiMessage().text();
-                    return Map.of(
-                            "draftAnswer", answer,
-                            "cycleCount", state.cycleCount() + 1
-                    );
-                }))
+                .addNode("generate", node_async(state ->
+                    generateTimer.record(() -> {
+                        String userPrompt = buildUserPrompt(state);
+                        String answer = chatModel.chat(
+                                List.of(SystemMessage.from(SYSTEM_PROMPT), UserMessage.from(userPrompt))
+                        ).aiMessage().text();
+
+                        Map<String, Object> updates = new HashMap<>();
+                        updates.put("draftAnswer", answer);
+                        updates.put("cycleCount", state.cycleCount() + 1);
+                        try {
+                            TransferResponseParser.parse(answer);
+                            updates.put("parseError", "");
+                        } catch (IllegalArgumentException e) {
+                            updates.put("parseError", e.getMessage());
+                        }
+                        return updates;
+                    })
+                ))
 
                 .addEdge(START, "retrieve")
                 .addEdge("retrieve", "tool_fetch")
                 .addEdge("tool_fetch", "generate")
                 .addConditionalEdges("generate",
-                        edge_async(state -> isStructurallyValid(state.draftAnswer()) || state.cycleCount() >= 2
+                        edge_async(state -> state.parseError().isEmpty() || state.cycleCount() >= 2
                                 ? "end" : "generate"),
                         Map.of("generate", "generate", "end", END))
 
@@ -236,29 +258,18 @@ public class TransferAgentGraph {
         sb.append("\nQUESTION: ").append(state.question());
 
         if (state.cycleCount() > 0) {
-            sb.append("\n\n[RETRY ").append(state.cycleCount())
-              .append("] Your previous response did not produce valid JSON. ")
-              .append("Output ONLY a JSON object — no markdown, no code fences, no // comments. ")
+            sb.append("\n\n[RETRY ").append(state.cycleCount()).append("] ");
+            String err = state.parseError();
+            if (!err.isBlank()) {
+                sb.append("Your previous response could not be parsed. Error: ").append(err).append(" ");
+            } else {
+                sb.append("Your previous response did not produce valid JSON. ");
+            }
+            sb.append("Output ONLY a JSON object — no markdown, no code fences, no // comments. ")
               .append("Start immediately with { and end with }.");
         }
 
         return sb.toString();
     }
 
-    /**
-     * Lightweight structural check — does not validate correctness, only shape.
-     * Returns false only when the response is clearly malformed (missing required fields
-     * or not JSON-like), triggering a GENERATE retry.
-     */
-    private static boolean isStructurallyValid(String draft) {
-        if (draft == null || draft.isBlank()) {
-            return false;
-        }
-        int open = draft.indexOf('{');
-        int close = draft.lastIndexOf('}');
-        if (open < 0 || close <= open) {
-            return false;
-        }
-        return draft.contains("\"supervisorReferral\"") && draft.contains("\"reasoning\"");
-    }
 }

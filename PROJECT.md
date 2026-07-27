@@ -79,6 +79,26 @@
 - **First full-suite green run: 11/11 pass** with qwen2.5:7b + MCP running
 - Residual flakiness: a4c (Halloway partial credit) and b3 (brand detection) can fail 1-2 times in 3 runs due to qwen2.5:7b non-determinism; both pass reliably in isolation
 
+### Milestone 11 — Angular + Bootstrap Examiner UI
+- `marion-ui/` — Angular 21 standalone app (Bootstrap 5.3)
+- Form: scenario textarea, origin state / transfer type / county selects, optional VIN field
+- Response: supervisor-referral alert (red), clean-transfer banner (green), required-documents list, conditional checklist (amber), fees table with total badge, additional-tax card (red/green), collapsible reasoning, source badges
+- Calls `POST /api/transfer/query/agent` via `TransferService`
+- Dev proxy: `proxy.conf.json` routes `/api` → `http://localhost:8080`
+- Run: `cd marion-ui && npm start` → http://localhost:4200
+
+### Milestone 10 — Error Handling + Node Instrumentation
+- `GlobalExceptionHandler` (`@RestControllerAdvice`): `IllegalArgumentException` → 422 `{"error":"PARSE_FAILED","detail":"..."}` (parse failures after retry); `IllegalStateException` → 500 `{"error":"AGENT_ERROR","detail":"..."}` (agent graph produced no output)
+- `TransferAgentGraph`: three `Timer` beans (`marion.agent.node` metric, `node` tag = `retrieve|tool-fetch|generate`) created at startup; each node body wrapped in `timer.record(Callable)`. Readable via `/actuator/metrics/marion.agent.node`.
+
+### Milestone 9 — Structured Output Parsing
+- `TransferResponseParser`: static utility; extracts JSON from raw LLM output, strips `//` and `/* */` comments, deserializes into `TransferResponse` via Jackson 3 `JsonMapper`. Throws `IllegalArgumentException` with specific message on failure.
+- `TransferController.query`: changed from `Flux<String>` SSE → `Mono<TransferResponse>` JSON. Parses LLM output server-side; on parse failure retries once with `[RETRY]` + specific error message in prompt.
+- `TransferAgentController.queryAgent`: changed from `Flux<String>` SSE → `Mono<TransferResponse>` JSON. Parses `draftAnswer` from graph on return.
+- `TransferAgentGraph` GENERATE node: tries `TransferResponseParser.parse()` after each LLM call; stores `parseError` (empty = success) in state. Retry condition uses `parseError.isEmpty()` instead of the old structural regex guard.
+- `TransferAgentState`: added `parseError()` accessor.
+- `TransferEvalTest`: `callTransfer()` returns `TransferResponse` directly (no more SSE filter+join); `parseJson()` helper removed; judge calls re-serialize structured object with `objectMapper.writeValueAsString()`.
+
 ### Milestone 5 — MCP Server Tool Registration
 - `McpToolRegistrationConfig`: `MethodToolCallbackProvider.builder().toolObjects(4 tool classes).build()`
 - Spring AI 1.1.0-M1: `ToolCallbackConverterAutoConfiguration` picks up `ToolCallbackProvider` beans → registers 7 MCP tools
