@@ -30,6 +30,7 @@ export class App {
   readonly showReasoning = signal(false);
   readonly response = signal<TransferResponse | null>(null);
   readonly errorMessage = signal<string | null>(null);
+  readonly errorCode = signal<string | null>(null);
 
   constructor(private transferService: TransferService) {}
 
@@ -39,6 +40,7 @@ export class App {
     this.loading.set(true);
     this.response.set(null);
     this.errorMessage.set(null);
+    this.errorCode.set(null);
     this.showReasoning.set(false);
 
     const request: TransferRequest = {
@@ -55,7 +57,11 @@ export class App {
         this.loading.set(false);
       },
       error: (err) => {
-        this.errorMessage.set(err.error?.detail ?? err.message ?? 'Unknown error');
+        const body = err.error;
+        // PII guardrail returns {error, piiType, message}; GlobalExceptionHandler returns {error, detail}
+        const message = body?.message ?? body?.detail ?? `Request failed (${err.status})`;
+        this.errorMessage.set(message);
+        this.errorCode.set(body?.error ?? null);
         this.loading.set(false);
       }
     });

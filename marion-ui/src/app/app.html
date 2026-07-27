@@ -104,9 +104,19 @@
       }
 
       @if (errorMessage()) {
-        <div class="alert alert-danger">
-          <strong>Error:</strong> {{ errorMessage() }}
-        </div>
+        @if (errorCode() === 'PII_DETECTED') {
+          <div class="alert alert-warning d-flex gap-3 align-items-start">
+            <div class="fs-4">&#128274;</div>
+            <div>
+              <strong class="d-block mb-1">Sensitive data detected</strong>
+              {{ errorMessage() }}
+            </div>
+          </div>
+        } @else {
+          <div class="alert alert-danger">
+            <strong>{{ errorCode() ?? 'Error' }}:</strong> {{ errorMessage() }}
+          </div>
+        }
       }
 
       @if (response(); as res) {
