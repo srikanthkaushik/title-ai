@@ -60,7 +60,9 @@ export class App {
           id: ++this.historyCounter,
           timestamp: new Date(),
           question: this.question,
-          response: res
+          response: res,
+          errorCode: null,
+          errorMessage: null
         }, ...h]);
         this.loading.set(false);
       },
@@ -68,8 +70,17 @@ export class App {
         const body = err.error;
         // PII guardrail returns {error, piiType, message}; GlobalExceptionHandler returns {error, detail}
         const message = body?.message ?? body?.detail ?? `Request failed (${err.status})`;
+        const code = body?.error ?? null;
         this.errorMessage.set(message);
-        this.errorCode.set(body?.error ?? null);
+        this.errorCode.set(code);
+        this.history.update(h => [{
+          id: ++this.historyCounter,
+          timestamp: new Date(),
+          question: this.question,
+          response: null,
+          errorCode: code,
+          errorMessage: message
+        }, ...h]);
         this.loading.set(false);
       }
     });
@@ -77,8 +88,8 @@ export class App {
 
   selectHistory(entry: HistoryEntry): void {
     this.response.set(entry.response);
-    this.errorMessage.set(null);
-    this.errorCode.set(null);
+    this.errorMessage.set(entry.errorMessage);
+    this.errorCode.set(entry.errorCode);
     this.showReasoning.set(false);
   }
 

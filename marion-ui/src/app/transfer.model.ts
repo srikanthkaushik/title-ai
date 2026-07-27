@@ -2,7 +2,9 @@ export interface HistoryEntry {
   id: number;
   timestamp: Date;
   question: string;
-  response: TransferResponse;
+  response: TransferResponse | null;
+  errorCode: string | null;
+  errorMessage: string | null;
 }
 
 export interface TransferRequest {
