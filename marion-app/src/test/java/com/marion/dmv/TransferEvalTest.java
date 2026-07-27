@@ -354,6 +354,51 @@ class TransferEvalTest {
                 .anyMatch(item -> item.toLowerCase().contains("emission"));
     }
 
+    // R1 — Crestwood RELOCATION: checklist must require proof of Marion residency; no bill of sale
+    @Test
+    void r1_crestwoodRelocation_residencyDocumentsRequired() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "A customer is relocating from Crestwood to Marion. " +
+                "Their vehicle is titled in Crestwood (paper title, no lien). " +
+                "What documents are required for the RELOCATION transfer?",
+                "1CST0000001000001", "Crestwood", "Marion County", "RELOCATION"
+        ));
+
+        assertThat(response.supervisorReferral()).isFalse();
+
+        int score = judge(
+                "For a RELOCATION transfer (owner moved to Marion; vehicle already owned, not purchased): " +
+                "the checklist must include proof of Marion residency (e.g., lease agreement, utility bill). " +
+                "A bill of sale is NOT required — there is no purchase transaction. " +
+                "Score 10 if proof of residency is listed AND bill of sale is absent. " +
+                "Score 5 if residency document is present but bill of sale also appears (incorrect). " +
+                "Score 2 if residency document is absent entirely.",
+                objectMapper.writeValueAsString(response)
+        );
+        assertThat(score)
+                .as("Judge score for R1 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // R2 — Verdana ELT RELOCATION: tax basis = NADA ($22,000); Verdana 5% vs Marion 5.5% → $110 owed
+    // Marion = 5.5% × $22,000 = $1,210. Credit = min(5% × $22,000, $1,210) = min($1,100, $1,210) = $1,100.
+    // Additional owed = $1,210 − $1,100 = $110.
+    @Test
+    void r2_verdanaEltRelocation_taxOnNadaBasis() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "A customer relocated from Verdana to Marion. Their vehicle is titled in Verdana " +
+                "(ELT, no lien). The NADA clean retail value is $22,000. They paid 5% sales tax " +
+                "in Verdana at the time of original purchase. How much additional Marion sales tax is owed?",
+                "1VRD0000001000001", "Verdana", "Marion County", "RELOCATION"
+        ));
+
+        assertThat(response.supervisorReferral()).isFalse();
+        assertThat(response.taxOwed())
+                .as("RELOCATION tax: Marion $1,210 − Verdana credit $1,100 = $110 owed")
+                .isNotNull()
+                .isCloseTo(110.00, within(0.01));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private TransferResponse callTransfer(TransferRequest request) {

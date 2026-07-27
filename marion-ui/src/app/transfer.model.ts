@@ -1,3 +1,10 @@
+export interface HistoryEntry {
+  id: number;
+  timestamp: Date;
+  question: string;
+  response: TransferResponse;
+}
+
 export interface TransferRequest {
   question: string;
   vehicleVin?: string;

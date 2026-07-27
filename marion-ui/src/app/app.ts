@@ -1,12 +1,12 @@
 import { Component, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { DecimalPipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import { TransferService } from './transfer.service';
-import { TransferRequest, TransferResponse } from './transfer.model';
+import { HistoryEntry, TransferRequest, TransferResponse } from './transfer.model';
 
 @Component({
   selector: 'app-root',
-  imports: [FormsModule, DecimalPipe],
+  imports: [FormsModule, DecimalPipe, DatePipe],
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
@@ -31,6 +31,8 @@ export class App {
   readonly response = signal<TransferResponse | null>(null);
   readonly errorMessage = signal<string | null>(null);
   readonly errorCode = signal<string | null>(null);
+  readonly history = signal<HistoryEntry[]>([]);
+  private historyCounter = 0;
 
   constructor(private transferService: TransferService) {}
 
@@ -54,6 +56,12 @@ export class App {
     this.transferService.query(request).subscribe({
       next: (res) => {
         this.response.set(res);
+        this.history.update(h => [{
+          id: ++this.historyCounter,
+          timestamp: new Date(),
+          question: this.question,
+          response: res
+        }, ...h]);
         this.loading.set(false);
       },
       error: (err) => {
@@ -65,6 +73,13 @@ export class App {
         this.loading.set(false);
       }
     });
+  }
+
+  selectHistory(entry: HistoryEntry): void {
+    this.response.set(entry.response);
+    this.errorMessage.set(null);
+    this.errorCode.set(null);
+    this.showReasoning.set(false);
   }
 
   get feeEntries(): { label: string; value: number }[] {
