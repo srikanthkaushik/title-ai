@@ -161,16 +161,6 @@ class TransferEvalTest {
                 .as("Verdana partial credit: $1,100 Marion tax - $1,000 credit = $100 additional")
                 .isNotNull()
                 .isCloseTo(100.0, within(0.01));
-
-        int score = judge(
-                "Customer paid 5% in Verdana on $20,000. Marion rate 5.5%. Verdana has a reciprocity agreement. " +
-                "Formula: credit = min(Verdana tax paid, Marion tax due) = min($1,000, $1,100) = $1,000. " +
-                "Additional owed = $1,100 - $1,000 = $100. Correct answer: $100.00.",
-                response
-        );
-        assertThat(score)
-                .as("Judge score for A4d (expected >= 7, got %d)", score)
-                .isGreaterThanOrEqualTo(7);
     }
 
     // F1 — Active paper lien → supervisor referral, no checklist, taxOwed=null

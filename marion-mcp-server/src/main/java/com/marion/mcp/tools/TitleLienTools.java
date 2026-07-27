@@ -1,7 +1,7 @@
 package com.marion.mcp.tools;
 
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.mcp.annotation.McpTool;
+import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -16,14 +16,14 @@ public class TitleLienTools {
         this.jdbc = jdbc;
     }
 
-    @Tool(description = """
+    @McpTool(description = """
             Look up a vehicle title record by VIN. Returns origin state, title form (PAPER/ELT/MIXED),
             lien status (NONE/RELEASED/ACTIVE), lienholder name, lien date, brand (if any),
             make, model, model year, body type, GVWR, odometer, insurance expiry, and notes.
             Returns null fields for missing data. Returns NOT_FOUND status if VIN is not in the database.
             """)
     public Map<String, Object> lookup_title_lien(
-            @ToolParam(description = "17-character Vehicle Identification Number") String vin) {
+            @McpToolParam(description = "17-character Vehicle Identification Number") String vin) {
 
         try {
             return jdbc.queryForMap(
@@ -40,13 +40,13 @@ public class TitleLienTools {
         }
     }
 
-    @Tool(description = """
+    @McpTool(description = """
             Decode a VIN to return make, model, model year, body type, and GVWR in pounds.
             Looks up the vehicles table; returns NOT_FOUND if VIN is not on record.
             This tool is for vehicle identification only — use lookup_title_lien for lien status.
             """)
     public Map<String, Object> decode_vin(
-            @ToolParam(description = "17-character Vehicle Identification Number") String vin) {
+            @McpToolParam(description = "17-character Vehicle Identification Number") String vin) {
 
         try {
             return jdbc.queryForMap(

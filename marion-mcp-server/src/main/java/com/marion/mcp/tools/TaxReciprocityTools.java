@@ -1,7 +1,7 @@
 package com.marion.mcp.tools;
 
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.mcp.annotation.McpTool;
+import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -16,7 +16,7 @@ public class TaxReciprocityTools {
         this.jdbc = jdbc;
     }
 
-    @Tool(description = """
+    @McpTool(description = """
             Look up Marion's tax reciprocity agreement with an origin state.
             Returns: has_agreement (true/false), origin_rate_pct (null if no agreement),
             and notes explaining the credit computation.
@@ -25,7 +25,7 @@ public class TaxReciprocityTools {
             If credit >= marion_tax_due, additional tax owed is $0 (no refund issued).
             """)
     public Map<String, Object> lookup_tax_reciprocity(
-            @ToolParam(description = "Origin state name (e.g., Verdana, Crestwood, Halloway, Pembrook)") String originState) {
+            @McpToolParam(description = "Origin state name (e.g., Verdana, Crestwood, Halloway, Pembrook)") String originState) {
 
         try {
             return jdbc.queryForMap(

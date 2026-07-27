@@ -1,7 +1,7 @@
 package com.marion.mcp.tools;
 
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.mcp.annotation.McpTool;
+import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -17,7 +17,7 @@ public class InspectionStationTools {
         this.jdbc = jdbc;
     }
 
-    @Tool(description = """
+    @McpTool(description = """
             Find authorized inspection stations in a Marion county.
             Returns station name, address, inspection types (VIN, EMISSIONS, or BOTH), phone, and notes.
             Metro counties (Marion County, Riverside County, Capital County) have stations.
@@ -26,8 +26,8 @@ public class InspectionStationTools {
             Use inspection_type filter: VIN, EMISSIONS, or BOTH.
             """)
     public List<Map<String, Object>> check_inspection_stations(
-            @ToolParam(description = "Marion county name, e.g., Marion County, Riverside County") String county,
-            @ToolParam(description = "Inspection type needed: VIN, EMISSIONS, or BOTH") String inspectionType) {
+            @McpToolParam(description = "Marion county name, e.g., Marion County, Riverside County") String county,
+            @McpToolParam(description = "Inspection type needed: VIN, EMISSIONS, or BOTH") String inspectionType) {
 
         String typeFilter = switch (inspectionType.toUpperCase()) {
             case "EMISSIONS" -> "inspection_types IN ('EMISSIONS', 'BOTH')";
@@ -44,14 +44,14 @@ public class InspectionStationTools {
         );
     }
 
-    @Tool(description = """
+    @McpTool(description = """
             Check whether a Marion county requires emissions testing.
             Returns county_type (METRO/RURAL) and emissions_required (true/false).
             Metro counties: Marion County, Riverside County, Capital County.
             Rural counties are exempt from emissions regardless of vehicle age.
             """)
     public Map<String, Object> check_county_emissions(
-            @ToolParam(description = "Marion county name, e.g., Marion County, Dunmore County") String county) {
+            @McpToolParam(description = "Marion county name, e.g., Marion County, Dunmore County") String county) {
 
         try {
             return jdbc.queryForMap(

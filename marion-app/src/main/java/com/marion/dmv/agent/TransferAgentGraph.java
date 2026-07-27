@@ -47,6 +47,11 @@ public class TransferAgentGraph {
               "Junk brand on a Halloway title" → supervisorReferral = true
             If any trigger is found, set supervisorReferral=true, referralForm="TR-10",
             checklist=null, taxOwed=null, and populate conditionalChecklist. Stop normal processing.
+            Before stopping: also identify the Marion brand equivalent from the Brand Equivalency Guide
+            and include it in referralReason (e.g., "Halloway Rebuilt → Marion brand: Reconstructed").
+            SCANNING CAUTION: An `odometer` or `gvwr_lbs` field in VEHICLE_RECORD is a data field
+            (mileage or weight) — it is NOT a brand trigger. Only a `brand` field explicitly containing
+            a brand name (Odometer, Rebuilt, etc.) triggers this step. Expired insurance is not a trigger.
 
             STEP 2 — NORMAL PROCESSING (only if Step 1 found no triggers):
             - Brand equivalency: consult the Brand Equivalency Guide for the specific origin state.
@@ -78,8 +83,15 @@ public class TransferAgentGraph {
               IMPORTANT: taxOwed is ADDITIONAL SALES TAX ONLY — never include title fees,
               VIN fees, or registration fees in taxOwed. Those belong in the "fees" object.
             - Emissions: required if registration county is metro (Marion, Riverside, Capital) AND
-              model year is less than 25 years old (relative to current year). Whether the origin
-              state has an emissions program is irrelevant.
+              (current_year - model_year) < 25. Compute the age explicitly:
+              age = current_year - model_year. If age < 25 → REQUIRED; if age >= 25 → exempt.
+              Example: current year 2026, model year 2003 → 2026 - 2003 = 23 < 25 → REQUIRED.
+              Example: current year 2026, model year 1998 → 2026 - 1998 = 28 >= 25 → exempt.
+              CURRENT RULE: 25-year threshold (effective Jan 2023). If a retrieved document
+              says "20-year threshold" — that version is SUPERSEDED; do NOT use it.
+              The origin state's emissions program is irrelevant — Marion's rules govern.
+              When emissions are REQUIRED, add "Emissions inspection (Form EMIT-1) — paid to
+              authorized testing station" to the checklist.
             - DATABASE LOOKUP RESULTS (if provided) are authoritative. Prefer them over retrieved
               documents when there is a conflict.
 
@@ -91,7 +103,7 @@ public class TransferAgentGraph {
               "supervisorReferral": false,
               "referralReason": null,
               "referralForm": null,
-              "checklist": ["Origin title (Crestwood paper)", "Form TR-1", "Form TR-2 (VIN inspection)", "Bill of sale", "Proof of insurance", "Odometer disclosure (Form OD-1)", "Fee payment"],
+              "checklist": ["Origin title (Crestwood paper)", "Form TR-1", "Form TR-2 (VIN inspection)", "Bill of sale", "Proof of insurance", "Odometer disclosure (Form OD-1)", "Emissions inspection (Form EMIT-1) — paid to authorized testing station", "Fee payment"],
               "conditionalChecklist": null,
               "conditionalNote": null,
               "fees": {
@@ -191,6 +203,7 @@ public class TransferAgentGraph {
     }
 
     private static final Pattern BRAND_PATTERN = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern RATE_PATTERN = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
 
     private static String buildUserPrompt(TransferAgentState state) {
         StringBuilder sb = new StringBuilder();
@@ -206,6 +219,13 @@ public class TransferAgentGraph {
             if (m.find()) {
                 sb.append("*** BRAND STAMP DETECTED IN VEHICLE RECORD: \"").append(m.group(1))
                   .append("\" — This is a BRANDED TITLE. Per STEP 1: supervisorReferral=true REQUIRED. ***\n");
+            }
+
+            // Surface the exact reciprocity rate so the model cannot hallucinate a different rate
+            Matcher rm = RATE_PATTERN.matcher(toolData);
+            if (rm.find()) {
+                sb.append("*** ORIGIN TAX RATE (from database): ").append(rm.group(1))
+                  .append("% — use THIS rate exactly for tax_paid_in_origin. Do not use any other rate. ***\n");
             }
         }
 

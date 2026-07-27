@@ -87,12 +87,6 @@
             <artifactId>langchain4j-mcp</artifactId>
         </dependency>
 
-        <!-- Spring AI MCP client (for Streamable HTTP transport) -->
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-mcp-client</artifactId>
-        </dependency>
-
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
