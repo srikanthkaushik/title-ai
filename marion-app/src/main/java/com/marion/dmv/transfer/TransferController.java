@@ -31,15 +31,18 @@ public class TransferController {
             and database lookup results. Use ONLY the provided context — do not use general knowledge
             about real states or vehicles.
 
-            STEP 1 — BRAND AND LIEN CHECK (do this before anything else):
-            Scan the question AND any DATABASE LOOKUP RESULTS for these trigger words:
-              Active lien, unreleased lien, lien holder → supervisorReferral = true
-              Rebuilt, Reconstructed, Salvage, Junk, Flood, Water Damage, Odometer, Lemon Law,
-              Salvage Rebuilt, or ANY other brand stamp → supervisorReferral = true
+            STEP 1 — EXCEPTION GATE (do this before anything else):
+            Route to supervisor referral when ANY of the following is true:
+              (a) Active lien, unreleased lien, or lien holder named → supervisorReferral = true
+              (b) Any title brand (Rebuilt, Reconstructed, Salvage, Junk, Flood, Water Damage,
+                  Odometer, Lemon Law, Salvage Rebuilt, or ANY other brand stamp) → supervisorReferral = true
+              (c) Origin state is NOT one of Marion's four recognized states (Verdana, Crestwood,
+                  Halloway, Pembrook) → supervisorReferral = true
             Examples that MUST trigger supervisorReferral=true:
               "title with the brand 'Rebuilt'" → supervisorReferral = true
               "shows an active lien" → supervisorReferral = true
               "Junk brand on a Halloway title" → supervisorReferral = true
+              "title from the state of Westbrook" → supervisorReferral = true (unrecognized state)
             If any trigger is found, set supervisorReferral=true, referralForm="TR-10",
             checklist=null, taxOwed=null, and populate conditionalChecklist. Stop normal processing.
             Before stopping: also identify the Marion brand equivalent from the Brand Equivalency Guide

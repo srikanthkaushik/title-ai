@@ -333,6 +333,113 @@ class TransferEvalTest {
                 .isGreaterThanOrEqualTo(7);
     }
 
+    // C1 — Out-of-scope: commercial trailer fee (corpus covers passenger vehicles only)
+    // The model should acknowledge it cannot find this information rather than inventing a fee.
+    @Test
+    void c1_commercialTrailerFee_outOfScope() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "What is the title transfer fee for a commercial trailer over 10,000 lbs in Marion?",
+                null, null, null, null
+        ));
+
+        int score = judge(
+                "The question asks for a commercial trailer title fee. Marion's corpus only covers " +
+                "passenger vehicles. The correct response is to acknowledge this information is not " +
+                "available in the corpus. Score 10 if the reasoning clearly states the information " +
+                "is not found or out of scope. Score 2 if the response invents a specific dollar " +
+                "amount for commercial trailers without acknowledging the limitation.",
+                objectMapper.writeValueAsString(response)
+        );
+        assertThat(score)
+                .as("Judge score for C1 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // C2 — Out-of-scope: online transfer (corpus covers in-person examiner process only)
+    @Test
+    void c2_onlineTransferProcess_outOfScope() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "Can a Marion customer complete an out-of-state title transfer online " +
+                "without visiting a DMV office?",
+                null, null, null, null
+        ));
+
+        int score = judge(
+                "The question asks whether title transfers can be done online. The corpus only " +
+                "covers the in-person examiner process and does not describe an online path. " +
+                "Score 10 if the response says this information is not available in the provided " +
+                "context, or advises the customer to contact the DMV directly. " +
+                "Score 2 if the response confidently asserts 'yes' or 'no' with no caveat " +
+                "about limited corpus scope.",
+                objectMapper.writeValueAsString(response)
+        );
+        assertThat(score)
+                .as("Judge score for C2 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // D1 — Superseded fee schedule: current title fee is $25 (not $20); current tax rate is 5.5% (not 4.5%).
+    // The superseded Admin Rule 9 (pre-2023) has title fee $20 and tax rate 4.5%.
+    // Using Pembrook (no reciprocity, no retrieval distraction): $10,000 × 5.5% = $550 (current),
+    // vs. $10,000 × 4.5% = $450 (superseded). Also checks title fee: current $25, superseded $20.
+    @Test
+    void d1_currentFeeSchedule_notSupersededVersion() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "A customer purchased a vehicle for $10,000 from a Pembrook seller. " +
+                "Pembrook has no reciprocity agreement with Marion. " +
+                "What is the Marion sales tax owed and what is the title transfer fee?",
+                null, "Pembrook", "Marion County", "PURCHASE"
+        ));
+
+        assertThat(response.supervisorReferral()).isFalse();
+        // Current tax rate 5.5%: $10,000 × 5.5% = $550.
+        // Superseded rate 4.5% would give $450 — wrong version.
+        assertThat(response.taxOwed())
+                .as("Current Marion rate 5.5%: $10k × 5.5% = $550; superseded 4.5% would give $450")
+                .isNotNull()
+                .isCloseTo(550.0, within(0.01));
+        // Current title fee $25; superseded was $20.
+        assertThat(response.fees()).isNotNull();
+        double titleFee = ((Number) response.fees().get("titleFee")).doubleValue();
+        assertThat(titleFee)
+                .as("Current title fee is $25.00; superseded fee schedule had $20.00")
+                .isCloseTo(25.0, within(0.01));
+    }
+
+    // F4 — Unrecognized origin state → supervisor referral
+    // Westbrook is not in Marion's recognized-state list (Verdana, Crestwood, Halloway, Pembrook).
+    @Test
+    void f4_unrecognizedOriginState_supervisorReferral() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "A customer is presenting a vehicle title from the state of Westbrook. " +
+                "Westbrook is not one of Marion's recognized origin states. " +
+                "What does the examiner do?",
+                null, "Westbrook", "Marion County", "PURCHASE"
+        ));
+
+        assertThat(response.supervisorReferral())
+                .as("Unrecognized origin state (Westbrook) must trigger supervisorReferral=true")
+                .isTrue();
+        assertThat(response.referralForm())
+                .as("Referral form for unrecognized state must be TR-10")
+                .isEqualTo("TR-10");
+        assertThat(response.checklist())
+                .as("Checklist must be null when supervisor referral is triggered")
+                .isNull();
+
+        int score = judge(
+                "A customer presents a title from Westbrook, an unrecognized origin state not in " +
+                "Marion's recognized-state list. What does the examiner do? " +
+                "Correct answer: supervisor referral (Form TR-10) because the state is not recognized. " +
+                "Score 10 if the response triggers supervisor referral and cites the unrecognized state. " +
+                "Score 2 if the response attempts to process the transfer normally.",
+                objectMapper.writeValueAsString(response)
+        );
+        assertThat(score)
+                .as("Judge score for F4 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
     // D2 — 2003 vehicle in Marion County (metro): REQUIRED under current 25-year rule.
     // Under superseded 20-year rule a 23-year-old vehicle would have been exempt — this catches
     // the system using the wrong version of Admin Rule 2.4.
