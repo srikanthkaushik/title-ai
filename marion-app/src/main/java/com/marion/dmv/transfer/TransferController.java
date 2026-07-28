@@ -87,6 +87,16 @@ public class TransferController {
               The origin state's emissions program is irrelevant — Marion's rules govern.
               When emissions are REQUIRED, add "Emissions inspection (Form EMIT-1) — paid to
               authorized testing station" to the checklist.
+            - RELOCATION vs. PURCHASE — the checklist differs by transfer type:
+              PURCHASE (customer bought the vehicle):
+                · Include "Bill of sale" in the checklist
+                · Tax basis = declared purchase price (or NADA clean retail if higher)
+              RELOCATION (owner already owns vehicle; moved to Marion — no new purchase):
+                · Include "Proof of Marion residency — any TWO of: signed lease or mortgage
+                  statement; utility bill within 60 days; employer letter on letterhead within 60 days"
+                · Do NOT include "Bill of sale" — no purchase transaction occurred
+                · Tax basis = NADA clean retail value (not the original purchase price)
+                · Form TR-1 Block C must indicate RELOCATION; Block D is left blank
             - DATABASE LOOKUP RESULTS (if provided) are authoritative. Prefer them over retrieved
               documents when there is a conflict.
 
@@ -202,9 +212,12 @@ public class TransferController {
         return sb.toString();
     }
 
-    private static final Pattern BRAND_PATTERN     = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern RATE_PATTERN      = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
-    private static final Pattern AGREEMENT_PATTERN = Pattern.compile("\"has_agreement\"\\s*:\\s*(true|false)");
+    private static final Pattern BRAND_PATTERN             = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern RATE_PATTERN              = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
+    private static final Pattern AGREEMENT_PATTERN         = Pattern.compile("\"has_agreement\"\\s*:\\s*(true|false)");
+    private static final Pattern BRAND_IN_QUESTION_PATTERN = Pattern.compile(
+            "\\b(?:Junk|Rebuilt|Salvage|Reconstructed|Flood|Odometer|Lemon Law|Water Damage)\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final double  MARION_TAX_RATE   = 5.5;
 
     private String buildUserPrompt(TransferRequest req, String context, Map<String, String> toolData, String parseError) {
@@ -264,6 +277,16 @@ public class TransferController {
         if (req.transferType() != null) {
             sb.append("TRANSFER TYPE: ").append(req.transferType()).append("\n");
         }
+
+        // Brand mentioned in question text (no VIN → no vehicle record banner fires)
+        Matcher qb = BRAND_IN_QUESTION_PATTERN.matcher(req.question());
+        if (qb.find()) {
+            sb.append("*** BRAND TERM '").append(qb.group()).append("' DETECTED IN QUESTION — ");
+            sb.append("consult the Brand Equivalency Guide for the origin state ");
+            sb.append("and include the Marion brand equivalent in referralReason ");
+            sb.append("(e.g., 'Halloway Junk → Marion brand: Salvage'). ***\n");
+        }
+
         sb.append("\nQUESTION: ").append(req.question());
 
         if (parseError != null && !parseError.isBlank()) {
