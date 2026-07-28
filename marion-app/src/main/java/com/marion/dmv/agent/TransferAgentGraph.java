@@ -165,7 +165,7 @@ public class TransferAgentGraph {
                                 .ifPresent(r -> toolData.put("VEHICLE_RECORD", r));
                         state.originState().ifPresent(os -> {
                             Optional<String> result = mcpToolService.lookupTaxReciprocity(os);
-                            log.info("[TOOL_FETCH] lookupTaxReciprocity({}) -> {}", os,
+                            log.debug("[TOOL_FETCH] lookupTaxReciprocity({}) -> {}", os,
                                     result.map(r -> r.substring(0, Math.min(r.length(), 120))).orElse("EMPTY"));
                             result.ifPresent(r -> toolData.put("TAX_RECIPROCITY", r));
                         });
@@ -173,7 +173,7 @@ public class TransferAgentGraph {
                             mcpToolService.lookupFees(state.transferType().get(), state.county().get())
                                     .ifPresent(r -> toolData.put("FEE_SCHEDULE", r));
                         }
-                        log.info("[TOOL_FETCH] toolData keys: {}", toolData.keySet());
+                        log.debug("[TOOL_FETCH] toolData keys: {}", toolData.keySet());
                         return Map.of("toolData", formatToolData(toolData));
                     })
                 ))
@@ -261,7 +261,7 @@ public class TransferAgentGraph {
             if (rm.find() && agm.find()) {
                 double originRate   = Double.parseDouble(rm.group(1));
                 boolean hasAgreement = Boolean.parseBoolean(agm.group(1));
-                log.info("[RATE_BANNER] fired — originRate={}% agreement={}", originRate, hasAgreement);
+                log.debug("[RATE_BANNER] fired — originRate={}% agreement={}", originRate, hasAgreement);
                 sb.append("*** TAX COMPUTATION ANCHORS (authoritative — use these exact values, no substitutions):\n");
                 sb.append("    Marion tax rate : ").append(MARION_TAX_RATE_PCT).append("%  (FIXED — never use any other rate for Marion)\n");
                 sb.append("    Origin tax rate : ").append(originRate).append("%  (from database — use THIS for tax_paid_in_origin)\n");
@@ -276,7 +276,7 @@ public class TransferAgentGraph {
                 }
                 sb.append("    WARNING: Do NOT use the shortcut (Marion_rate − origin_rate) × value — that formula is WRONG. ***\n");
             } else {
-                log.warn("[RATE_BANNER] did not fire — toolData: {}", toolData);
+                log.debug("[RATE_BANNER] did not fire — toolData: {}", toolData);
             }
         }
 

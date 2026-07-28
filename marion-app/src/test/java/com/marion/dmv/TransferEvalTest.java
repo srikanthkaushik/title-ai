@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.within;
  *
  * Scoring: reason-before-verdict, SCORE: N on final line (0-10). -1 = unparseable.
  */
+@ActiveProfiles("eval")
 @SpringBootTest
 @TestMethodOrder(MethodOrderer.MethodName.class)
 class TransferEvalTest {
