@@ -509,6 +509,91 @@ class TransferEvalTest {
                 .isCloseTo(110.00, within(0.01));
     }
 
+    // A7 — 1998 model year, Marion County (metro): 2026 − 1998 = 28 ≥ 25 → EXEMPT.
+    // Catches models that use the superseded 20-year threshold (would require emissions).
+    @Test
+    void a7_1998VehicleMetroCounty_emissionsExempt() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "A customer is purchasing a 1998 model year vehicle and will register it in Marion County. " +
+                "The current year is 2026. Is an emissions inspection required?",
+                null, "Crestwood", "Marion County", "PURCHASE"
+        ));
+
+        assertThat(response.supervisorReferral()).isFalse();
+
+        // 2026 − 1998 = 28 years ≥ 25 → exempt under current rule
+        assertThat(response.checklist())
+                .as("1998 vehicle (28 years old in 2026) is exempt from emissions — must NOT appear in checklist")
+                .isNotNull()
+                .noneMatch(item -> item.toLowerCase().contains("emit") || item.toLowerCase().contains("emission"));
+
+        if (response.fees() != null) {
+            Object emissionsFee = response.fees().get("emissionsFee");
+            if (emissionsFee instanceof Number n) {
+                assertThat(n.doubleValue())
+                        .as("emissionsFee must be $0 for exempt vehicle")
+                        .isEqualTo(0.0);
+            }
+        }
+    }
+
+    // B4 — Verdana RELOCATION: customer asks what tax documentation to bring.
+    // Distractor: Verdana ELT procedures look authoritative for Verdana questions but cover
+    // title mechanics, not tax documentation. NADA $22,000; Verdana 5% → $110 owed.
+    @Test
+    void b4_verdanaRelocationTaxDocs_notEltProcedures() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "A customer relocated from Verdana to Marion and already owns the vehicle — not a new purchase. " +
+                "The NADA clean retail value is $22,000. What tax documentation must they bring to show " +
+                "what sales tax was previously paid in Verdana?",
+                "1VRD0000001000001", "Verdana", "Marion County", "RELOCATION"
+        ));
+
+        int score = judge(
+                "The customer is asking about TAX DOCUMENTATION for a RELOCATION from Verdana — " +
+                "specifically what proof of prior tax payment they need to bring. " +
+                "Score 10 if the response identifies the relevant tax documentation (prior registration, " +
+                "tax receipt, or similar proof of Verdana tax paid) and correctly notes the reciprocity credit applies. " +
+                "Score 7 if it addresses tax documentation correctly but omits the credit/computation detail. " +
+                "Score 2 if it only describes Verdana ELT title transfer procedures and ignores the tax documentation question. " +
+                "Score 1 if it fabricates Verdana-specific tax forms not in the corpus.",
+                objectMapper.writeValueAsString(response)
+        );
+        assertThat(score)
+                .as("Judge score for B4 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
+    // B5 — Pembrook "Salvage Rebuilt" is a single compound brand → Marion "Rebuilt" (one brand, not two).
+    // Distractor: naive reading splits it into "Salvage" + "Rebuilt"; Crestwood profile has separate brands.
+    @Test
+    void b5_pembrookSalvageRebuiltCompoundBrand_singleMarionBrand() throws Exception {
+        TransferResponse response = callTransfer(new TransferRequest(
+                "A customer presents a Pembrook title stamped with the brand 'Salvage Rebuilt'. " +
+                "How many brands should appear on the Marion title, and what is the Marion brand name?",
+                "1PMB0000001000002", "Pembrook", "Marion County", "PURCHASE"
+        ));
+
+        assertThat(response.supervisorReferral())
+                .as("Branded title must trigger supervisor referral").isTrue();
+        assertThat(response.referralForm()).isEqualTo("TR-10");
+        assertThat(response.checklist()).as("Checklist must be null on referral").isNull();
+
+        int score = judge(
+                "A Pembrook title shows the compound brand 'Salvage Rebuilt'. " +
+                "Per the Brand Equivalency Guide, Pembrook 'Salvage Rebuilt' maps to a SINGLE Marion brand: 'Rebuilt'. " +
+                "It is NOT split into two separate brands. " +
+                "Score 10 if the response correctly identifies ONE Marion brand ('Rebuilt') and explains it is a single compound brand. " +
+                "Score 5 if it identifies a supervisor referral but is ambiguous about whether it is one or two brands. " +
+                "Score 2 if it splits it into two brands (e.g. 'Salvage' and 'Reconstructed', or 'Salvage' and 'Rebuilt' as two). " +
+                "Score 1 if it uses the wrong Marion brand name entirely.",
+                objectMapper.writeValueAsString(response)
+        );
+        assertThat(score)
+                .as("Judge score for B5 (expected >= 7, got %d)", score)
+                .isGreaterThanOrEqualTo(7);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private TransferResponse callTransfer(TransferRequest request) {

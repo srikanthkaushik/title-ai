@@ -29,7 +29,9 @@ public final class TransferResponseParser {
         json = json.replaceAll("(?s)/\\*.*?\\*/", "");
         json = json.replaceAll("//[^\n]*", "");
         try {
-            return MAPPER.readValue(json, TransferResponse.class);
+            return TransferResponseValidator.validate(MAPPER.readValue(json, TransferResponse.class));
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             throw new IllegalArgumentException(
                     "JSON deserialization failed: " + e.getMessage(), e);
