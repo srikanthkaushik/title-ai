@@ -1,0 +1,64 @@
+.reasoning-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+// Checkbox prefix on checklist items — hidden on screen, visible on print
+.print-checkbox {
+  display: none;
+}
+
+// Print-only elements hidden on screen
+.print-only {
+  display: none;
+}
+
+@media print {
+  // Hide everything that isn't part of the result
+  .no-print {
+    display: none !important;
+  }
+
+  // Show print-only elements
+  .print-only {
+    display: block !important;
+  }
+
+  // Show checkboxes on each list item
+  .print-checkbox {
+    display: inline;
+  }
+
+  // Expand response panel to full width
+  .col-lg-8 {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 0 0 100% !important;
+  }
+
+  // Remove decorative shadows; keep borders
+  .card {
+    box-shadow: none !important;
+    break-inside: avoid;
+  }
+
+  // Prevent checklist items splitting across pages
+  .list-group-item {
+    break-inside: avoid;
+  }
+
+  // Don't print the notes textarea — notes are already printed as text below
+  textarea {
+    display: none !important;
+  }
+
+  .container-xl {
+    max-width: 100% !important;
+    padding: 0 0.5rem !important;
+  }
+
+  // Remove top padding added by py-4
+  .py-4 {
+    padding-top: 0 !important;
+  }
+}

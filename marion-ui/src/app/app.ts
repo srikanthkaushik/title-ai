@@ -34,6 +34,9 @@ export class App {
   readonly history = signal<HistoryEntry[]>([]);
   readonly phase = signal<string>('');
   readonly streamingText = signal<string>('');
+  readonly copied = signal(false);
+  readonly notes = signal<string>('');
+  private activeHistoryId = signal<number | null>(null);
   private historyCounter = 0;
 
   constructor(private transferService: TransferService) {}
@@ -48,6 +51,8 @@ export class App {
     this.showReasoning.set(false);
     this.phase.set('');
     this.streamingText.set('');
+    this.notes.set('');
+    this.activeHistoryId.set(null);
 
     const request: TransferRequest = {
       question: this.question,
@@ -67,13 +72,16 @@ export class App {
           this.response.set(event.data);
           this.phase.set('');
           this.streamingText.set('');
+          const id = ++this.historyCounter;
+          this.activeHistoryId.set(id);
           this.history.update(h => [{
-            id: ++this.historyCounter,
+            id,
             timestamp: new Date(),
             question: this.question,
             response: event.data,
             errorCode: null,
-            errorMessage: null
+            errorMessage: null,
+            notes: ''
           }, ...h]);
           this.loading.set(false);
         } else if (event.type === 'error') {
@@ -81,13 +89,16 @@ export class App {
           this.errorCode.set('STREAM_ERROR');
           this.phase.set('');
           this.streamingText.set('');
+          const id = ++this.historyCounter;
+          this.activeHistoryId.set(id);
           this.history.update(h => [{
-            id: ++this.historyCounter,
+            id,
             timestamp: new Date(),
             question: this.question,
             response: null,
             errorCode: 'STREAM_ERROR',
-            errorMessage: event.message
+            errorMessage: event.message,
+            notes: ''
           }, ...h]);
           this.loading.set(false);
         }
@@ -98,18 +109,20 @@ export class App {
         this.errorCode.set('CONNECTION_ERROR');
         this.phase.set('');
         this.streamingText.set('');
+        const id = ++this.historyCounter;
+        this.activeHistoryId.set(id);
         this.history.update(h => [{
-          id: ++this.historyCounter,
+          id,
           timestamp: new Date(),
           question: this.question,
           response: null,
           errorCode: 'CONNECTION_ERROR',
-          errorMessage: message
+          errorMessage: message,
+          notes: ''
         }, ...h]);
         this.loading.set(false);
       },
       complete: () => {
-        // safety net: loading is already cleared by result/error events
         this.loading.set(false);
       }
     });
@@ -122,6 +135,27 @@ export class App {
     this.showReasoning.set(false);
     this.phase.set('');
     this.streamingText.set('');
+    this.notes.set(entry.notes);
+    this.activeHistoryId.set(entry.id);
+  }
+
+  saveNotes(): void {
+    const id = this.activeHistoryId();
+    if (id === null) return;
+    const text = this.notes();
+    this.history.update(h => h.map(e => e.id === id ? { ...e, notes: text } : e));
+  }
+
+  copyChecklist(items: string[]): void {
+    const text = items.map((item, i) => `${i + 1}. ${item}`).join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+      this.copied.set(true);
+      setTimeout(() => this.copied.set(false), 2000);
+    });
+  }
+
+  printPage(): void {
+    window.print();
   }
 
   get feeEntries(): { label: string; value: number }[] {

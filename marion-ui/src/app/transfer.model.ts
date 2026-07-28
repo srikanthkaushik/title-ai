@@ -5,6 +5,7 @@ export interface HistoryEntry {
   response: TransferResponse | null;
   errorCode: string | null;
   errorMessage: string | null;
+  notes: string;
 }
 
 export interface TransferRequest {
