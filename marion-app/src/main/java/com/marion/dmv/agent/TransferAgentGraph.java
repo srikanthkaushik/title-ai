@@ -17,10 +17,14 @@ import org.bsc.langgraph4j.StateGraph;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -31,6 +35,8 @@ import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
 
 @Configuration
 public class TransferAgentGraph {
+
+    private static final Logger log = LoggerFactory.getLogger(TransferAgentGraph.class);
 
     static final String SYSTEM_PROMPT = """
             You are a Marion DMV title transfer assistant helping an examiner determine requirements
@@ -157,13 +163,17 @@ public class TransferAgentGraph {
                         state.vehicleVin()
                                 .flatMap(mcpToolService::lookupTitleLien)
                                 .ifPresent(r -> toolData.put("VEHICLE_RECORD", r));
-                        state.originState()
-                                .flatMap(mcpToolService::lookupTaxReciprocity)
-                                .ifPresent(r -> toolData.put("TAX_RECIPROCITY", r));
+                        state.originState().ifPresent(os -> {
+                            Optional<String> result = mcpToolService.lookupTaxReciprocity(os);
+                            log.info("[TOOL_FETCH] lookupTaxReciprocity({}) -> {}", os,
+                                    result.map(r -> r.substring(0, Math.min(r.length(), 120))).orElse("EMPTY"));
+                            result.ifPresent(r -> toolData.put("TAX_RECIPROCITY", r));
+                        });
                         if (state.transferType().isPresent() && state.county().isPresent()) {
                             mcpToolService.lookupFees(state.transferType().get(), state.county().get())
                                     .ifPresent(r -> toolData.put("FEE_SCHEDULE", r));
                         }
+                        log.info("[TOOL_FETCH] toolData keys: {}", toolData.keySet());
                         return Map.of("toolData", formatToolData(toolData));
                     })
                 ))
@@ -224,8 +234,10 @@ public class TransferAgentGraph {
         return sb.toString();
     }
 
-    private static final Pattern BRAND_PATTERN = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern RATE_PATTERN = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
+    private static final Pattern BRAND_PATTERN       = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern RATE_PATTERN        = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
+    private static final Pattern AGREEMENT_PATTERN   = Pattern.compile("\"has_agreement\"\\s*:\\s*(true|false)");
+    private static final double  MARION_TAX_RATE_PCT = 5.5;
 
     private static String buildUserPrompt(TransferAgentState state) {
         StringBuilder sb = new StringBuilder();
@@ -243,11 +255,28 @@ public class TransferAgentGraph {
                   .append("\" — This is a BRANDED TITLE. Per STEP 1: supervisorReferral=true REQUIRED. ***\n");
             }
 
-            // Surface the exact reciprocity rate so the model cannot hallucinate a different rate
-            Matcher rm = RATE_PATTERN.matcher(toolData);
-            if (rm.find()) {
-                sb.append("*** ORIGIN TAX RATE (from database): ").append(rm.group(1))
-                  .append("% — use THIS rate exactly for tax_paid_in_origin. Do not use any other rate. ***\n");
+            // Lock both rates and pre-compute intermediates so the model cannot substitute a wrong rate
+            Matcher rm  = RATE_PATTERN.matcher(toolData);
+            Matcher agm = AGREEMENT_PATTERN.matcher(toolData);
+            if (rm.find() && agm.find()) {
+                double originRate   = Double.parseDouble(rm.group(1));
+                boolean hasAgreement = Boolean.parseBoolean(agm.group(1));
+                log.info("[RATE_BANNER] fired — originRate={}% agreement={}", originRate, hasAgreement);
+                sb.append("*** TAX COMPUTATION ANCHORS (authoritative — use these exact values, no substitutions):\n");
+                sb.append("    Marion tax rate : ").append(MARION_TAX_RATE_PCT).append("%  (FIXED — never use any other rate for Marion)\n");
+                sb.append("    Origin tax rate : ").append(originRate).append("%  (from database — use THIS for tax_paid_in_origin)\n");
+                sb.append("    Reciprocity     : ").append(hasAgreement ? "YES — credit applies" : "NO — credit = $0, full Marion tax owed").append("\n");
+                sb.append("    Formula         : marion_tax_due = taxable_value × ").append(MARION_TAX_RATE_PCT).append("%\n");
+                if (hasAgreement) {
+                    sb.append("                      tax_paid_in_origin = taxable_value × ").append(originRate).append("%\n");
+                    sb.append("                      reciprocity_credit = min(tax_paid_in_origin, marion_tax_due)\n");
+                    sb.append("                      taxOwed = max(0, marion_tax_due − reciprocity_credit)\n");
+                } else {
+                    sb.append("                      taxOwed = marion_tax_due  (no credit)\n");
+                }
+                sb.append("    WARNING: Do NOT use the shortcut (Marion_rate − origin_rate) × value — that formula is WRONG. ***\n");
+            } else {
+                log.warn("[RATE_BANNER] did not fire — toolData: {}", toolData);
             }
         }
 

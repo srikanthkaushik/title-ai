@@ -202,8 +202,10 @@ public class TransferController {
         return sb.toString();
     }
 
-    private static final Pattern BRAND_PATTERN = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern RATE_PATTERN = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
+    private static final Pattern BRAND_PATTERN     = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern RATE_PATTERN      = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
+    private static final Pattern AGREEMENT_PATTERN = Pattern.compile("\"has_agreement\"\\s*:\\s*(true|false)");
+    private static final double  MARION_TAX_RATE   = 5.5;
 
     private String buildUserPrompt(TransferRequest req, String context, Map<String, String> toolData, String parseError) {
         StringBuilder sb = new StringBuilder();
@@ -224,13 +226,27 @@ public class TransferController {
                 }
             }
 
-            // Surface the exact reciprocity rate so the model cannot hallucinate a different rate
+            // Lock both rates and pre-compute formula steps so the model cannot substitute a wrong rate
             String reciprocity = toolData.get("TAX_RECIPROCITY");
             if (reciprocity != null) {
-                Matcher rm = RATE_PATTERN.matcher(reciprocity);
-                if (rm.find()) {
-                    sb.append("*** ORIGIN TAX RATE (from database): ").append(rm.group(1))
-                      .append("% — use THIS rate exactly for tax_paid_in_origin. Do not use any other rate. ***\n");
+                Matcher rm  = RATE_PATTERN.matcher(reciprocity);
+                Matcher agm = AGREEMENT_PATTERN.matcher(reciprocity);
+                if (rm.find() && agm.find()) {
+                    double originRate    = Double.parseDouble(rm.group(1));
+                    boolean hasAgreement = Boolean.parseBoolean(agm.group(1));
+                    sb.append("*** TAX COMPUTATION ANCHORS (authoritative — use these exact values, no substitutions):\n");
+                    sb.append("    Marion tax rate : ").append(MARION_TAX_RATE).append("%  (FIXED — never use any other rate for Marion)\n");
+                    sb.append("    Origin tax rate : ").append(originRate).append("%  (from database — use THIS for tax_paid_in_origin)\n");
+                    sb.append("    Reciprocity     : ").append(hasAgreement ? "YES — credit applies" : "NO — credit = $0, full Marion tax owed").append("\n");
+                    sb.append("    Formula         : marion_tax_due = taxable_value × ").append(MARION_TAX_RATE).append("%\n");
+                    if (hasAgreement) {
+                        sb.append("                      tax_paid_in_origin = taxable_value × ").append(originRate).append("%\n");
+                        sb.append("                      reciprocity_credit = min(tax_paid_in_origin, marion_tax_due)\n");
+                        sb.append("                      taxOwed = max(0, marion_tax_due − reciprocity_credit)\n");
+                    } else {
+                        sb.append("                      taxOwed = marion_tax_due  (no credit)\n");
+                    }
+                    sb.append("    WARNING: Do NOT use the shortcut (Marion_rate − origin_rate) × value — that formula is WRONG. ***\n");
                 }
             }
             sb.append("\n");
