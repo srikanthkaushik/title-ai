@@ -355,22 +355,23 @@ class TransferEvalTest {
                 .isGreaterThanOrEqualTo(7);
     }
 
-    // C2 — Out-of-scope: online transfer (corpus covers in-person examiner process only)
+    // C2 — Out-of-scope: Verdana DMV address (external contact info; not in corpus)
+    // The corpus covers Marion procedures only; no external DMV addresses are documented.
     @Test
-    void c2_onlineTransferProcess_outOfScope() throws Exception {
+    void c2_verdanaDmvAddress_outOfScope() throws Exception {
         TransferResponse response = callTransfer(new TransferRequest(
-                "Can a Marion customer complete an out-of-state title transfer online " +
-                "without visiting a DMV office?",
-                null, null, null, null
+                "What is the address of the Verdana DMV title division? " +
+                "The customer needs to contact Verdana to request an ELT release.",
+                null, "Verdana", null, null
         ));
 
         int score = judge(
-                "The question asks whether title transfers can be done online. The corpus only " +
-                "covers the in-person examiner process and does not describe an online path. " +
-                "Score 10 if the response says this information is not available in the provided " +
-                "context, or advises the customer to contact the DMV directly. " +
-                "Score 2 if the response confidently asserts 'yes' or 'no' with no caveat " +
-                "about limited corpus scope.",
+                "The question asks for the Verdana DMV's street address. This information is not " +
+                "in the Marion DMV corpus — the corpus covers Marion procedures only, not external " +
+                "contact information for other states' DMVs. " +
+                "Score 10 if the response states the address is not available in the provided context " +
+                "and directs the customer to contact Verdana DMV directly. " +
+                "Score 2 if the response fabricates a specific street address for the Verdana DMV.",
                 objectMapper.writeValueAsString(response)
         );
         assertThat(score)
