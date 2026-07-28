@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
+
 @Configuration
 public class LlmConfig {
 
@@ -31,6 +33,9 @@ public class LlmConfig {
     @Value("${ollama.chat-model:qwen2.5:7b}")
     private String ollamaChatModel;
 
+    @Value("${ollama.timeout-minutes:5}")
+    private int ollamaTimeoutMinutes;
+
     @Bean
     public ChatModel chatModel() {
         if ("ollama".equalsIgnoreCase(provider)) {
@@ -38,6 +43,7 @@ public class LlmConfig {
             return OllamaChatModel.builder()
                     .baseUrl(ollamaBaseUrl)
                     .modelName(ollamaChatModel)
+                    .timeout(Duration.ofMinutes(ollamaTimeoutMinutes))
                     .build();
         }
         System.out.println(">>> LLM provider: ANTHROPIC (model: " + anthropicModel + ")");
@@ -54,6 +60,7 @@ public class LlmConfig {
             return OllamaStreamingChatModel.builder()
                     .baseUrl(ollamaBaseUrl)
                     .modelName(ollamaChatModel)
+                    .timeout(Duration.ofMinutes(ollamaTimeoutMinutes))
                     .build();
         }
         return AnthropicStreamingChatModel.builder()
