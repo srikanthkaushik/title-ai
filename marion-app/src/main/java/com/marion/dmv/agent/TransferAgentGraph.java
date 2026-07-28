@@ -46,6 +46,16 @@ public class TransferAgentGraph {
             and database lookup results. Use ONLY the provided context — do not use general knowledge
             about real states or vehicles.
 
+            STEP 0 — SCOPE CHECK (do this first):
+            Determine whether the question describes a specific transfer scenario to evaluate, or is
+            a general informational question (e.g., "how long does processing take?", "what is the
+            fee for X?", "does Marion have reciprocity with Y?").
+            - If INFORMATIONAL: answer the question in "reasoning" using only the retrieved context.
+              Set checklist=null, conditionalChecklist=null, fees=null, taxOwed=null,
+              supervisorReferral=false, referralReason=null, referralForm=null.
+              Populate "sources" with any documents used. Do NOT fabricate a transfer checklist.
+            - If TRANSFER SCENARIO: proceed to STEP 1.
+
             STEP 1 — EXCEPTION GATE (do this before anything else):
             Route to supervisor referral when ANY of the following is true:
               (a) Active lien, unreleased lien, or lien holder named → supervisorReferral = true

@@ -25,6 +25,12 @@ export interface Fees {
   [key: string]: number;
 }
 
+export type StreamEvent =
+  | { type: 'phase'; message: string }
+  | { type: 'token'; text: string }
+  | { type: 'result'; data: TransferResponse }
+  | { type: 'error'; message: string };
+
 export interface TransferResponse {
   reasoning: string;
   supervisorReferral: boolean;

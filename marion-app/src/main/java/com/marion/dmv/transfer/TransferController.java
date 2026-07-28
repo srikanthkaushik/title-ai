@@ -6,16 +6,24 @@ import com.marion.dmv.retrieval.RetrievalService;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,6 +38,16 @@ public class TransferController {
             You will be given retrieved regulatory documents and, if available, vehicle record data
             and database lookup results. Use ONLY the provided context — do not use general knowledge
             about real states or vehicles.
+
+            STEP 0 — SCOPE CHECK (do this first):
+            Determine whether the question describes a specific transfer scenario to evaluate, or is
+            a general informational question (e.g., "how long does processing take?", "what is the
+            fee for X?", "does Marion have reciprocity with Y?").
+            - If INFORMATIONAL: answer the question in "reasoning" using only the retrieved context.
+              Set checklist=null, conditionalChecklist=null, fees=null, taxOwed=null,
+              supervisorReferral=false, referralReason=null, referralForm=null.
+              Populate "sources" with any documents used. Do NOT fabricate a transfer checklist.
+            - If TRANSFER SCENARIO: proceed to STEP 1.
 
             STEP 1 — EXCEPTION GATE (do this before anything else):
             Route to supervisor referral when ANY of the following is true:
@@ -136,17 +154,23 @@ public class TransferController {
             """;
 
     private final ChatModel chatModel;
+    private final StreamingChatModel streamingChatModel;
     private final RetrievalService retrievalService;
     private final McpToolService mcpToolService;
+    private final ObjectMapper objectMapper;
     private final Timer answerTimer;
 
     public TransferController(ChatModel chatModel,
+                              StreamingChatModel streamingChatModel,
                               RetrievalService retrievalService,
                               McpToolService mcpToolService,
+                              ObjectMapper objectMapper,
                               MeterRegistry meterRegistry) {
         this.chatModel = chatModel;
+        this.streamingChatModel = streamingChatModel;
         this.retrievalService = retrievalService;
         this.mcpToolService = mcpToolService;
+        this.objectMapper = objectMapper;
         this.answerTimer = Timer.builder("marion.answer")
                 .description("Answer generation time")
                 .tag("node", "answer-generator")
@@ -180,6 +204,96 @@ public class TransferController {
             }
         })
         .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    // Streaming endpoint: emits phase/token/result SSE events so the UI can show live progress.
+    // Uses StreamingChatModel for the first attempt; falls back to ChatModel on parse failure.
+    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> stream(@RequestBody TransferRequest request) {
+        return Flux.<ServerSentEvent<String>>create(sink -> {
+            try {
+                sink.next(phaseSse("Retrieving documents…"));
+                List<RetrievalResult> hits = retrievalService.retrieveAndRerank(request.question());
+                String context = buildContext(hits);
+                Map<String, String> toolData = fetchToolData(request);
+
+                sink.next(phaseSse("Generating answer…"));
+                StreamAccumulator acc = new StreamAccumulator(token -> sink.next(tokenSse(token)));
+
+                streamingChatModel.chat(
+                        List.of(SystemMessage.from(SYSTEM_PROMPT),
+                                UserMessage.from(buildUserPrompt(request, context, toolData, null))),
+                        acc);
+
+                String raw = acc.await();
+                Throwable streamErr = acc.error();
+                if (streamErr != null) throw streamErr;
+
+                TransferResponse result;
+                try {
+                    result = TransferResponseParser.parse(raw);
+                } catch (IllegalArgumentException parseError) {
+                    sink.next(phaseSse("Retrying…"));
+                    String retryRaw = chatModel.chat(
+                            List.of(SystemMessage.from(SYSTEM_PROMPT),
+                                    UserMessage.from(buildUserPrompt(request, context, toolData, parseError.getMessage())))
+                    ).aiMessage().text();
+                    result = TransferResponseParser.parse(retryRaw);
+                }
+
+                sink.next(resultSse(result));
+            } catch (Throwable t) {
+                sink.next(errorSse(t.getMessage() != null ? t.getMessage() : "Internal error"));
+            } finally {
+                sink.complete();
+            }
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    // Named static class — anonymous inner classes break WebFlux streaming handlers.
+    private static final class StreamAccumulator implements StreamingChatResponseHandler {
+        private final Consumer<String> onToken;
+        private final StringBuilder buf = new StringBuilder();
+        private final CountDownLatch latch = new CountDownLatch(1);
+        private volatile Throwable err;
+
+        StreamAccumulator(Consumer<String> onToken) { this.onToken = onToken; }
+
+        @Override public void onPartialResponse(String t) { buf.append(t); onToken.accept(t); }
+        @Override public void onCompleteResponse(ChatResponse r) { latch.countDown(); }
+        @Override public void onError(Throwable t) { err = t; latch.countDown(); }
+
+        String await() throws InterruptedException { latch.await(); return buf.toString(); }
+        Throwable error() { return err; }
+    }
+
+    private ServerSentEvent<String> phaseSse(String msg) {
+        return ServerSentEvent.<String>builder().event("phase")
+                .data("{\"type\":\"phase\",\"message\":" + jsonStr(msg) + "}").build();
+    }
+
+    private ServerSentEvent<String> tokenSse(String token) {
+        return ServerSentEvent.<String>builder().event("token")
+                .data("{\"type\":\"token\",\"text\":" + jsonStr(token) + "}").build();
+    }
+
+    private ServerSentEvent<String> resultSse(TransferResponse r) {
+        try {
+            return ServerSentEvent.<String>builder().event("result")
+                    .data("{\"type\":\"result\",\"data\":" + objectMapper.writeValueAsString(r) + "}").build();
+        } catch (Exception e) {
+            return errorSse("Serialization failed: " + e.getMessage());
+        }
+    }
+
+    private ServerSentEvent<String> errorSse(String msg) {
+        return ServerSentEvent.<String>builder().event("error")
+                .data("{\"type\":\"error\",\"message\":" + jsonStr(msg) + "}").build();
+    }
+
+    private String jsonStr(String s) {
+        try { return objectMapper.writeValueAsString(s); }
+        catch (Exception e) { return "\"\""; }
     }
 
     private Map<String, String> fetchToolData(TransferRequest req) {

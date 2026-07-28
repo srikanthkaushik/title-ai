@@ -32,6 +32,8 @@ export class App {
   readonly errorMessage = signal<string | null>(null);
   readonly errorCode = signal<string | null>(null);
   readonly history = signal<HistoryEntry[]>([]);
+  readonly phase = signal<string>('');
+  readonly streamingText = signal<string>('');
   private historyCounter = 0;
 
   constructor(private transferService: TransferService) {}
@@ -44,6 +46,8 @@ export class App {
     this.errorMessage.set(null);
     this.errorCode.set(null);
     this.showReasoning.set(false);
+    this.phase.set('');
+    this.streamingText.set('');
 
     const request: TransferRequest = {
       question: this.question,
@@ -53,34 +57,59 @@ export class App {
       ...(this.transferType      && { transferType: this.transferType }),
     };
 
-    this.transferService.query(request).subscribe({
-      next: (res) => {
-        this.response.set(res);
-        this.history.update(h => [{
-          id: ++this.historyCounter,
-          timestamp: new Date(),
-          question: this.question,
-          response: res,
-          errorCode: null,
-          errorMessage: null
-        }, ...h]);
-        this.loading.set(false);
+    this.transferService.stream(request).subscribe({
+      next: (event) => {
+        if (event.type === 'phase') {
+          this.phase.set(event.message);
+        } else if (event.type === 'token') {
+          this.streamingText.update(t => t + event.text);
+        } else if (event.type === 'result') {
+          this.response.set(event.data);
+          this.phase.set('');
+          this.streamingText.set('');
+          this.history.update(h => [{
+            id: ++this.historyCounter,
+            timestamp: new Date(),
+            question: this.question,
+            response: event.data,
+            errorCode: null,
+            errorMessage: null
+          }, ...h]);
+          this.loading.set(false);
+        } else if (event.type === 'error') {
+          this.errorMessage.set(event.message);
+          this.errorCode.set('STREAM_ERROR');
+          this.phase.set('');
+          this.streamingText.set('');
+          this.history.update(h => [{
+            id: ++this.historyCounter,
+            timestamp: new Date(),
+            question: this.question,
+            response: null,
+            errorCode: 'STREAM_ERROR',
+            errorMessage: event.message
+          }, ...h]);
+          this.loading.set(false);
+        }
       },
       error: (err) => {
-        const body = err.error;
-        // PII guardrail returns {error, piiType, message}; GlobalExceptionHandler returns {error, detail}
-        const message = body?.message ?? body?.detail ?? `Request failed (${err.status})`;
-        const code = body?.error ?? null;
+        const message = (err as Error).message ?? 'Stream connection failed';
         this.errorMessage.set(message);
-        this.errorCode.set(code);
+        this.errorCode.set('CONNECTION_ERROR');
+        this.phase.set('');
+        this.streamingText.set('');
         this.history.update(h => [{
           id: ++this.historyCounter,
           timestamp: new Date(),
           question: this.question,
           response: null,
-          errorCode: code,
+          errorCode: 'CONNECTION_ERROR',
           errorMessage: message
         }, ...h]);
+        this.loading.set(false);
+      },
+      complete: () => {
+        // safety net: loading is already cleared by result/error events
         this.loading.set(false);
       }
     });
@@ -91,6 +120,8 @@ export class App {
     this.errorMessage.set(entry.errorMessage);
     this.errorCode.set(entry.errorCode);
     this.showReasoning.set(false);
+    this.phase.set('');
+    this.streamingText.set('');
   }
 
   get feeEntries(): { label: string; value: number }[] {

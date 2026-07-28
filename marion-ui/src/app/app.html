@@ -80,7 +80,7 @@
               [disabled]="loading() || !question.trim()">
               @if (loading()) {
                 <span class="spinner-border spinner-border-sm me-2" role="status"></span>
-                Analyzing&hellip;
+                {{ phase() || 'Starting…' }}
               } @else {
                 Analyze Transfer
               }
@@ -121,6 +121,21 @@
     <!-- ── Response Panel ─────────────────────────────────────────────────── -->
     <div class="col-lg-8">
 
+      @if (loading()) {
+        <div class="card shadow-sm mb-3 border-primary">
+          <div class="card-body py-3">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <span class="spinner-border spinner-border-sm text-primary" role="status"></span>
+              <span class="fw-medium text-primary">{{ phase() || 'Starting…' }}</span>
+            </div>
+            @if (streamingText()) {
+              <div class="border rounded p-2 bg-light small text-muted font-monospace"
+                   style="max-height:180px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">{{ streamingText() }}</div>
+            }
+          </div>
+        </div>
+      }
+
       @if (!response() && !loading() && !errorMessage()) {
         <div class="d-flex align-items-center justify-content-center h-100 text-muted">
           <div class="text-center py-5">
@@ -148,7 +163,7 @@
 
       @if (response(); as res) {
 
-        <!-- Status banner -->
+        <!-- Status banner — only shown when an actual transfer is being evaluated -->
         @if (res.supervisorReferral) {
           <div class="alert alert-danger d-flex align-items-start gap-3 mb-3">
             <div class="fs-4 mt-1">&#9888;</div>
@@ -162,7 +177,7 @@
               }
             </div>
           </div>
-        } @else {
+        } @else if (res.checklist) {
           <div class="alert alert-success mb-3">
             &#10003; Transfer can proceed — no supervisor escalation required.
           </div>
