@@ -104,6 +104,34 @@
 - Spring AI 1.1.0-M1: `ToolCallbackConverterAutoConfiguration` picks up `ToolCallbackProvider` beans → registers 7 MCP tools
 - Smoke test PASSED: happy path + exception path both work end-to-end
 
+### SSE Streaming Endpoint + STEP 0 Scope Check
+- `POST /api/transfer/stream`: SSE endpoint emitting phase → token → result events for live UI progress during retrieval and generation
+- `TransferController`: named static `StreamAccumulator` class (anonymous inner classes break WebFlux streaming handlers — see gotchas)
+- STEP 0 added to both system prompts (`TransferController` and `TransferAgentGraph`): informational questions (processing time, fee lookups, reciprocity queries) answer in `reasoning` only, with `checklist`/`fees`/`taxOwed` null — suppresses smaller models (qwen2.5:7b) fabricating a spurious transfer evaluation for non-transfer questions
+- Angular `stream()` method: fetch API + `ReadableStream`; `phase`/`streamingText` signals drive a live progress card and button label
+- UI status banner only renders when a checklist or referral is present, so informational answers don't show a misleading proceed/referral state
+
+### Eval Pinning Consistency
+- `RetrievalEvalTest` was missing `@ActiveProfiles("eval")`, leaving its reranker on the default Ollama provider while `TransferEvalTest` was already pinned to Anthropic
+- Both eval test classes now consistently use `@ActiveProfiles("eval")` → deterministic Anthropic-backed evals; all runtime paths still default to Ollama
+
+### Milestone 1A — Fee Arithmetic Fix + 3 Eval Tests
+- `TransferResponseValidator`: runs after every `TransferResponseParser.parse()` call, deterministically corrects LLM output:
+  - `totalToDMV` recomputed from fee components (catches LLM arithmetic errors, e.g. observed $99 vs correct $120 total with Ollama)
+  - `referralForm` forced to `"TR-10"` whenever `supervisorReferral=true`
+  - `checklist` nulled out on referral if the model forgot to null it
+  - `conditionalNote` back-filled when `conditionalChecklist` is present but the note is missing
+- Three new `TransferEvalTest` cases close remaining Milestone 0 gaps:
+  - A7: 1998 model year in Marion County → 2026 − 1998 = 28 ≥ 25 → emissions exempt
+  - B4: Verdana relocation tax scenario with ELT-conversion-procedure distractor document
+  - B5: Pembrook compound brand "Salvage Rebuilt" → normalizes to single Marion brand "Rebuilt"
+
+### Milestone 1B — Examiner UX
+- Ctrl+Enter on the scenario textarea submits the form
+- Copy button on Required Documents and Conditional Checklist cards — copies items as a numbered list, briefly shows "✓ Copied"
+- Examiner Notes textarea in the response panel persists notes onto the active history entry; entries with notes show a pencil indicator in the history sidebar
+- Print button (`window.print()`) with `@media print` CSS: hides navbar/query form/history/streaming card/buttons, expands response panel full-width, adds a print-only title header and checkbox glyphs on checklist items
+
 ## Key gotchas
 
 | Trap | Fix |
@@ -119,6 +147,9 @@
 | qwen2.5:7b + VEHICLE_RECORD `odometer` field | Model scans all DATABASE LOOKUP RESULTS text for brand trigger words; `odometer` field name matches the "Odometer" brand trigger. Explicit SCANNING CAUTION in STEP 1 required |
 | qwen2.5:7b tax rate hallucination | Model ignores MCP TAX_RECIPROCITY rate at temperature=0 (greedy path). Fix: extract `origin_rate_pct` from JSON response and inject `*** ORIGIN TAX RATE: N% ***` banner. Do NOT use temperature=0 — it makes contamination worse |
 | qwen2.5:7b copies example checklist verbatim | Model templates the example JSON when generating checklist. Emissions inspection must appear in the example checklist; if not in the template, model never adds it |
+| Anonymous inner class in WebFlux SSE handler | Breaks streaming — extract to a named static class (`StreamAccumulator`) |
+| Smaller models answer non-transfer questions as if they were transfers | Add a STEP 0 scope check to the system prompt: informational questions get `reasoning`-only answers with checklist/fees/taxOwed null |
+| LLM arithmetic on fee totals is unreliable | Don't trust the model's `totalToDMV`; recompute deterministically in `TransferResponseValidator` from the itemized components |
 
 ## Architecture
 
@@ -145,7 +176,5 @@ POST /api/transfer/query/agent
 - Retrieval: `procedure-ch4-4-elt-conversion.md` doesn't surface in top-5 for Verdana ELT query; `admin-rule-2-1-transfer-procedures.md` covers the content (eval assertion widened)
 
 ## Next steps (not started)
-- Instrument: `Timer` on each graph node; measure RETRIEVE vs TOOL_FETCH vs GENERATE share of latency
-- Frontend: simple examiner UI (eval suite is now stable with MCP)
-- Eval pinning: set `ANTHROPIC_API_KEY` in shell, add `@ActiveProfiles("eval")` to TransferEvalTest for 100% deterministic results; current qwen2.5:7b rate is ~10/11 across runs
 - Consider: structured output parsing with retry vs current regex guard
+- Untracked in working tree, not yet committed or triaged: `kickoff.md`, `new-project-instructions.md`, `devdocs-ai-skilljar-alignment.md`, `title.pdf`, scratch logs (`eval-baseline.log`, `eval-run2.log`, `mcp-server*.log`)
