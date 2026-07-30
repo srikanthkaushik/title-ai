@@ -55,4 +55,19 @@ public class TransferAgentState extends AgentState {
     public String parseError() {
         return this.<String>value("parseError").orElse("");
     }
+
+    /** Whether the last successfully-parsed draft requires supervisor referral. */
+    public boolean supervisorReferral() {
+        return this.<Boolean>value("supervisorReferral").orElse(false);
+    }
+
+    /** Supervisor's decision ("APPROVED"/"DENIED"), populated only on resume after a referral pause. */
+    public Optional<String> supervisorDecision() {
+        return value("supervisorDecision");
+    }
+
+    /** Supervisor's free-text note, populated only on resume after a referral pause. */
+    public Optional<String> supervisorNote() {
+        return value("supervisorNote");
+    }
 }

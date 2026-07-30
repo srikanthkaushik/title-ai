@@ -9,8 +9,9 @@ graph TD
     subgraph marion-app ["marion-app — Spring WebFlux :8080"]
         PII["PiiGuardrailFilter\n@Order(-100)\nblocks SSN / card patterns"]
         TC["TransferController\nPOST /api/transfer/query"]
-        TAC["TransferAgentController\nPOST /api/transfer/query/agent"]
-        Graph["LangGraph4j Agent\nRETRIEVE → TOOL_FETCH → GENERATE"]
+        TAC["TransferAgentController\nPOST /api/transfer/query/agent\nPOST /api/transfer/query/agent/resume"]
+        Graph["LangGraph4j Agent\nRETRIEVE → TOOL_FETCH → GENERATE → await_supervisor"]
+        Checkpoint[("MemorySaver\nin-process checkpoint\nkeyed by threadId")]
         Retrieval["RetrievalService\nhybrid vector + FTS + LLM rerank"]
         MCP_Client["McpToolService\nlazy DefaultMcpClient"]
         Parser["TransferResponseParser\nJackson 3, strips // and /* */ comments"]
@@ -32,7 +33,10 @@ graph TD
     Browser -->|"proxy /api →"| PII
     PII --> TC
     PII --> TAC
-    TAC --> Graph
+    TAC -->|"invoke(inputs, threadId)"| Graph
+    TAC -->|"resume(threadId, decision)"| Graph
+    Graph -->|"checkpoint after GENERATE\ninterruptBefore(await_supervisor)"| Checkpoint
+    Checkpoint -->|"getState().next()\n== await_supervisor?"| TAC
     Graph --> Retrieval
     Graph --> MCP_Client
     Graph -->|"chat()"| Ollama
@@ -55,8 +59,10 @@ graph TD
 |---|---|
 | `PiiGuardrailFilter` | WebFlux `WebFilter` at `@Order(-100)`; regex-blocks SSN and card patterns on `/api/transfer/**`; returns 400 before the request reaches any controller |
 | `TransferController` | Single-shot endpoint; retrieval + MCP tools + LLM in one blocking `Mono.fromCallable`; retries once on parse failure with specific Jackson error in prompt |
-| `TransferAgentController` | Delegates to the compiled LangGraph4j graph; returns parsed `TransferResponse` |
-| `TransferAgentGraph` | Defines RETRIEVE → TOOL_FETCH → GENERATE graph with conditional retry edge; each node timed via `marion.agent.node` Micrometer metric |
+| `TransferAgentController` | Delegates to the compiled LangGraph4j graph; issues a fresh `threadId` per `/query/agent` call; returns `AgentTransferResponse` (wraps `TransferResponse` + `awaitingSupervisorDecision` + `threadId`); `/query/agent/resume` re-enters a paused checkpoint by `threadId` |
+| `TransferAgentGraph` | Defines RETRIEVE → TOOL_FETCH → GENERATE → `await_supervisor` graph with a conditional retry edge and a conditional referral-pause edge; each node timed via `marion.agent.node` Micrometer metric |
+| `await_supervisor` node | No-op gate node; its only purpose is a named `interruptBefore()` target. The graph halts here — after GENERATE's output is committed, before this node's body runs — whenever `supervisorReferral=true` |
+| `MemorySaver` | LangGraph4j in-process `BaseCheckpointSaver`; persists graph state keyed by `threadId` so a paused run can be resumed later in the same process. **Not durable across app restarts** — a real deployment needs a Postgres-backed saver (not shipped by LangGraph4j) |
 | `RetrievalService` | Hybrid retrieval: vector cosine + Postgres FTS; retrieves 3× target, reranks with LLM cross-encoder (reason-before-verdict, `SCORE:` pattern), returns top-N |
 | `McpToolService` | Lazy `DefaultMcpClient` with double-checked locking; degrades gracefully if MCP server is unreachable |
 | `TransferResponseParser` | Strips `//` and `/* */` comments from raw LLM output, extracts first `{…}` block, deserializes with Jackson 3 `FAIL_ON_UNKNOWN_PROPERTIES=false` |
@@ -79,7 +85,9 @@ graph LR
 | Method | Path | Handler | Returns |
 |---|---|---|---|
 | `POST` | `/api/transfer/query` | `TransferController` | `TransferResponse` (JSON, 200) |
-| `POST` | `/api/transfer/query/agent` | `TransferAgentController` | `TransferResponse` (JSON, 200) |
+| `POST` | `/api/transfer/query/agent` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — `{response, awaitingSupervisorDecision, threadId}` |
+| `POST` | `/api/transfer/query/agent/resume` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — resumes a paused `threadId` with `{decision, note}`; does not re-invoke the LLM |
+| `POST` | `/api/transfer/stream` | `TransferController` | SSE phase/token/result events (non-agent path; no checkpointing, so no HITL pause) |
 | `POST` | `/api/ingest/reset?confirm=true` | `IngestController` | wipes + reseeds corpus |
 | `GET` | `/actuator/health` | Spring Boot Actuator | health status |
 | `GET` | `/actuator/metrics/marion.agent.node` | Micrometer | node latency by tag |
@@ -127,20 +135,102 @@ flowchart TD
 
     GENERATE["GENERATE node\nbuildUserPrompt() → RETRIEVED CONTEXT\n+ DATABASE LOOKUP RESULTS\n+ BRAND / RATE banners\n→ chatModel.chat()\n→ TransferResponseParser.parse()\n→ stores parseError in state\n⏱ marion.agent.node{node=generate}"]
 
-    GENERATE --> Edge{{"parseError.isEmpty()\nor cycleCount ≥ 2?"}}
+    GENERATE --> Edge{{"routeAfterGenerate(state)\n(checks supervisorDecision present?)"}}
 
-    Edge -->|"yes — valid or gave up"| END(["END"])
-    Edge -->|"no — retry"| GENERATE
+    Edge -->|"parse failed, cycles left in phase"| GENERATE
+    Edge -->|"parsed OK, first pass,\nsupervisorReferral=true"| AWAIT["await_supervisor\n(no-op gate node)\ninterruptBefore fires here"]
+    Edge -->|"parsed OK, no referral —\nor already post-decision"| END(["END"])
 
-    END --> Return["TransferAgentController\nextract draftAnswer\nTransferResponseParser.parse()\n→ TransferResponse JSON"]
+    AWAIT -->|"graph halts here until resumed via\nGraphResume(threadId, decision, note)"| RESUME{{"resume: merge decision+note\ninto state, re-enter at await_supervisor"}}
+    RESUME --> GENERATE
+
+    END --> Return["TransferAgentController\nextract draftAnswer\nTransferResponseParser.parse()\n→ AgentTransferResponse JSON"]
 ```
 
 ### Retry mechanics
 
-- `cycleCount` starts at 0 and increments each GENERATE pass.
-- After a failed parse the retry prompt prepends `[RETRY N] Your previous response could not be parsed. Error: <Jackson message>`.
-- At `cycleCount ≥ 2` the graph exits regardless of parse state; the controller then calls `parse()` one final time, which throws `IllegalArgumentException` if the output is still malformed — caught by `GlobalExceptionHandler` → 422.
-- `recursionLimit(10)` is a backstop (3 nodes × 2 cycles + retrieve + tool_fetch = 8 steps).
+- `cycleCount` starts at 0 and increments each GENERATE pass, shared across both the first pass and
+  the post-supervisor-decision pass (it is never reset).
+- After a failed parse the retry prompt prepends `[RETRY N] Your previous response could not be parsed. Error: <Jackson message>` — independent of, and additive with, the supervisor-review block (see below), so a parse-retry mid post-review pass doesn't lose the decision context.
+- `routeAfterGenerate` caps retries at `FIRST_PASS_MAX_CYCLES=2` for the first pass, or
+  `FIRST_PASS_MAX_CYCLES + POST_REVIEW_MAX_CYCLES=4` total once `supervisorDecision` is present in
+  state — and once present, the edge never routes back to `await_supervisor`, only to `generate` or `end`.
+- `recursionLimit(14)` is a generous backstop, not a tight budget: retrieve + tool_fetch + up to 4
+  generate cycles (across both phases) + await_supervisor + end.
+- Retry and referral-pause are mutually exclusive per cycle: `routeAfterGenerate` only checks `supervisorReferral` once parsing has already succeeded, so a malformed response is always retried before referral status is ever consulted.
+
+---
+
+# Human-in-the-Loop Supervisor Review
+
+Real pause/resume, not a display-only flag: when GENERATE produces `supervisorReferral=true`, the graph
+execution itself halts before advancing past `await_supervisor`, and stays halted — potentially indefinitely —
+until a supervisor's decision arrives on a separate HTTP call. On resume, the decision and note are **fed
+back to the model** — `await_supervisor` routes to a second GENERATE pass (not straight to END), so the
+agent produces a genuinely finalized response rather than just unblocking the original draft.
+
+```mermaid
+sequenceDiagram
+    participant U as Examiner (UI)
+    participant TAC as TransferAgentController
+    participant G as CompiledGraph
+    participant CP as MemorySaver (checkpoint)
+    participant Sup as Supervisor (UI)
+    participant LLM as chatModel
+
+    U->>TAC: POST /query/agent {question, ...}
+    TAC->>TAC: threadId = UUID.randomUUID()
+    TAC->>G: invoke(inputs, config[threadId])
+    G->>G: RETRIEVE → TOOL_FETCH
+    G->>LLM: GENERATE (pass 1) — finds the exception
+    G->>CP: checkpoint(state, nextNodeId=await_supervisor)
+    G-->>TAC: paused — interruptBefore(await_supervisor)
+    TAC->>CP: getState(config).next()
+    CP-->>TAC: "await_supervisor"
+    TAC-->>U: AgentTransferResponse{response, awaitingSupervisorDecision=true, threadId}
+
+    Note over U,Sup: Referral banner + "Awaiting Supervisor Decision" card render.<br/>Run stays paused — no timeout, no polling required.
+
+    Sup->>TAC: POST /query/agent/resume {threadId, decision, note}
+    TAC->>G: invoke(GraphResume({supervisorDecision, supervisorNote}), config[threadId])
+    G->>CP: load checkpoint by threadId, merge resume data into state
+    G->>G: await_supervisor (no-op) routes to GENERATE again
+    G->>LLM: GENERATE (pass 2) — prior draft + decision + note fed back in
+    Note over LLM: APPROVED → finalize STEP 2 (checklist, fees, taxOwed) as if never blocked.<br/>DENIED → keep blocked, fold the note into conditionalNote.
+    G-->>TAC: final state (draftAnswer = pass-2 output) → END
+    TAC->>CP: getState(config).next()
+    CP-->>TAC: null (reached END)
+    TAC-->>Sup: AgentTransferResponse{response, awaitingSupervisorDecision=false, threadId}
+```
+
+### Design notes
+
+- **Detecting a pause is checkpoint-driven, not stream-driven.** `graph.invoke()` returns the graph's state
+  either way; the only reliable signal for "did this pause or finish?" is `graph.getState(config).next()`,
+  which reads the persisted `Checkpoint.nextNodeId` — it equals `"await_supervisor"` when paused, `null`
+  when the run reached `END`.
+- **Resume triggers exactly one more GENERATE pass, never a re-pause.** `routeAfterGenerate` checks
+  `state.supervisorDecision().isPresent()`: once a decision has been merged into state (which only happens
+  via resume), the graph will never route back to `await_supervisor` again, no matter what the second
+  pass's own `supervisorReferral` value comes out as. Retry-on-parse-failure still applies within each
+  phase (`FIRST_PASS_MAX_CYCLES` + `POST_REVIEW_MAX_CYCLES`, both = 2 — `recursionLimit(14)` is a generous
+  backstop, not a tight budget).
+- **The second pass gets the first pass's full draft, not just the decision.** `buildSupervisorReviewBlock()`
+  includes the prior `draftAnswer` verbatim plus the decision/note, and instructs the model explicitly:
+  APPROVED → run STEP 2 to completion (fold `conditionalChecklist` into `checklist`, compute fees/tax,
+  clear `supervisorReferral`); DENIED → stay blocked, explain the denial in `conditionalNote`. This block is
+  appended *after* the original STEP 1 trigger banners in the prompt and explicitly says it supersedes them
+  — otherwise a weaker model can re-trigger STEP 1 from the earlier banner instead of honoring the decision.
+- **`threadId` is the resume key.** It's generated per `/query/agent` call, returned to the client in
+  `AgentTransferResponse`, and must be echoed back verbatim on `/query/agent/resume`. There is no
+  server-side list of pending referrals in this prototype — the client (UI history entry) is the only
+  place `threadId` is retained.
+- **`MemorySaver` is in-process memory, not a durable store.** A paused referral is lost if `marion-app`
+  restarts before a supervisor decides. Acceptable for a prototype; a production deployment needs a
+  Postgres-backed `BaseCheckpointSaver` (LangGraph4j ships the interface, not an implementation).
+- **The non-agent path (`/api/transfer/stream`, `TransferController`) has no checkpointer and cannot pause.**
+  HITL only exists on the LangGraph4j-backed `/query/agent` path — this is why the UI's `submit()` uses that
+  endpoint rather than the SSE streaming one.
 
 ---
 

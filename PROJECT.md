@@ -132,6 +132,68 @@
 - Examiner Notes textarea in the response panel persists notes onto the active history entry; entries with notes show a pencil indicator in the history sidebar
 - Print button (`window.print()`) with `@media print` CSS: hides navbar/query form/history/streaming card/buttons, expands response panel full-width, adds a print-only title header and checkbox glyphs on checklist items
 
+### Milestone 12 — Human-in-the-Loop Supervisor Review (prototype)
+- Previously `supervisorReferral` was only a display flag — no actual pause/resume; a human
+  read the banner outside the app. Now the LangGraph4j agent graph genuinely pauses.
+- `TransferAgentGraph`: added a no-op `await_supervisor` gate node between GENERATE and END.
+  Conditional edge routes to it only when `parseError` is empty AND `supervisorReferral=true`;
+  otherwise unchanged (retry-on-parse-failure / straight-to-END for clean transfers).
+- `CompileConfig`: `.checkpointSaver(new MemorySaver())` + `.interruptBefore("await_supervisor")`
+  — the graph persists a checkpoint after GENERATE and halts before the gate node runs.
+  **MemorySaver is in-process only — a paused referral is lost on app restart.** Fine for a
+  prototype; a real deployment needs a durable `BaseCheckpointSaver` (e.g. Postgres-backed,
+  hand-written — LangGraph4j doesn't ship one).
+- `TransferAgentController`: `/api/transfer/query/agent` now generates a `threadId` (UUID) per
+  request and returns `AgentTransferResponse { response, awaitingSupervisorDecision, threadId }`
+  — a wrapper record, not a change to `TransferResponse` itself (kept the LLM-facing JSON
+  contract untouched). Detects pause via `graph.getState(config).next() == "await_supervisor"`,
+  not by inspecting the stream's terminal value (interruption metadata isn't a `NodeOutput`,
+  so don't rely on `invoke()`'s return type alone to detect a pause).
+- New endpoint `POST /api/transfer/query/agent/resume` (`SupervisorDecisionRequest {threadId,
+  decision, note}`) resumes via `graph.invoke(GraphInput.resume(Map.of(...)), config)`.
+- UI: `App.submit()` switched from the `/api/transfer/stream` SSE endpoint to `/query/agent`
+  (the only endpoint with a checkpointer) — **this drops live token streaming on the main path**,
+  a deliberate tradeoff to make HITL reachable in the running app. `TransferService.stream()`
+  still exists, unused, in case streaming needs to come back for the non-referral path.
+  Referral responses now render an amber "Awaiting Supervisor Decision" card (note textarea +
+  Approve/Deny) below the red referral banner; resolves to a grey "recorded" message on decision.
+  History sidebar shows an amber "Pending Review" badge while a thread is paused.
+- Verified end-to-end live (curl + Playwright/Edge headless): pause on referral scenario,
+  clean scenario runs straight through.
+
+#### Follow-up — decision fed back to the model, not just recorded
+
+Initial version resumed straight to END without the LLM ever seeing the decision (`await_supervisor`
+→ END, no-op). Extended so `await_supervisor` routes to a **second GENERATE pass** instead:
+- `routeAfterGenerate`: once `state.supervisorDecision()` is present (only true after a resume),
+  cycle cap becomes `FIRST_PASS_MAX_CYCLES + POST_REVIEW_MAX_CYCLES` (2+2=4) and the edge never
+  routes back to `await_supervisor` again — only to `generate` (retry) or `end`.
+  `await_supervisor`'s edge changed from `→ END` to `→ generate`.
+- `buildSupervisorReviewBlock()`: appends the prior `draftAnswer`, the decision, and the note to
+  the second-pass prompt, with explicit instructions — APPROVED runs STEP 2 to completion (folds
+  `conditionalChecklist` into `checklist`, computes fees/tax, clears `supervisorReferral`); DENIED
+  stays blocked (`checklist`/`taxOwed`/`conditionalChecklist` all null) and explains the denial in
+  `conditionalNote`, quoting the supervisor's note.
+- The retry-block guard in `buildUserPrompt` changed from `cycleCount() > 0` to
+  `!parseError().isEmpty()` — the old guard would have misfired a "your previous response could
+  not be parsed" message on the post-review pass's first attempt (cycleCount is already >0 from
+  the first pass, but nothing failed to parse).
+- `recursionLimit` bumped `11` → `14` to cover the extra phase.
+- **Verified live** (after fixing a self-inflicted restart mistake — see gotchas below): Approve
+  produces a genuinely different, fully-resolved `TransferResponse` (checklist populated from
+  `conditionalChecklist` + STEP 2 additions, fees/tax computed, `supervisorReferral=false`);
+  `marion.agent.node{node=generate}` COUNT increased by exactly 1 per resume, confirming exactly
+  one extra LLM call, not zero and not a retry storm. Deny produces a blocked response with the
+  supervisor's note folded into `conditionalNote`.
+- **Known limitations (prototype scope, not bugs):**
+  - No "list pending referrals" endpoint — the client (UI history entry) is the only place a
+    paused `threadId` is retained; there's no server-side way to discover or audit paused runs.
+  - Resuming a `threadId` MemorySaver has never seen (unknown, or lost to an app restart) fails
+    as a generic 500 `AGENT_ERROR` / "Missing Checkpoint!" — not a distinct 404/409.
+  - The published design-deck artifact ("A Flag Is Not a Control") still says resume "adds zero
+    re-inference cost" — accurate when written, **no longer accurate** now that resume triggers a
+    second GENERATE pass. Not updated yet; flagged to the user, their call whether to revise it.
+
 ## Key gotchas
 
 | Trap | Fix |
@@ -150,6 +212,10 @@
 | Anonymous inner class in WebFlux SSE handler | Breaks streaming — extract to a named static class (`StreamAccumulator`) |
 | Smaller models answer non-transfer questions as if they were transfers | Add a STEP 0 scope check to the system prompt: informational questions get `reasoning`-only answers with checklist/fees/taxOwed null |
 | LLM arithmetic on fee totals is unreliable | Don't trust the model's `totalToDMV`; recompute deterministically in `TransferResponseValidator` from the itemized components |
+| LangGraph4j 1.8.20 detecting an interrupted run | `InterruptionMetadata` is NOT a `NodeOutput` — don't rely on `invoke()`'s return type to tell pause vs. complete. Call `graph.getState(config).next()` after `invoke()`; it equals the gate node's id when paused, else null/END |
+| LangGraph4j 1.8.20 resuming a paused run | Use `graph.invoke(GraphInput.resume(map), config)` with the SAME `threadId` — passing a plain `Map` to `invoke()` restarts from START instead of resuming |
+| `mvn -pl marion-app spring-boot:run` on Windows spawns TWO `java.exe` processes | One is the Maven launcher (`org.codehaus.plexus.classworlds.launcher.Launcher`), the other is the actual Spring Boot app (`com.marion.dmv.MarionDmvApplication`). Killing the launcher's PID does NOT stop the app — it keeps holding port 8080. Find the real PID with `Get-CimInstance Win32_Process -Filter "Name='java.exe'" | Where CommandLine -match 'MarionDmvApplication'`, or check `Get-NetTCPConnection -LocalPort 8080 | Select OwningProcess` |
+| Native Windows `python3`/`node` vs Git Bash `/tmp` | They can resolve `/tmp/...` to different filesystems — a file `tee`'d to `/tmp/x.json` in Bash may throw `FileNotFoundError` when opened by a native `python3 -c "..."` in the same command. Extract JSON fields with `grep -o`/`sed` (same shell, same filesystem view) instead of shelling out to `python3` for one-liners |
 
 ## Architecture
 

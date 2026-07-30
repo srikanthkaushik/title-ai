@@ -4,6 +4,8 @@ import com.marion.dmv.transfer.TransferRequest;
 import com.marion.dmv.transfer.TransferResponse;
 import com.marion.dmv.transfer.TransferResponseParser;
 import org.bsc.langgraph4j.CompiledGraph;
+import org.bsc.langgraph4j.GraphInput;
+import org.bsc.langgraph4j.RunnableConfig;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
@@ -11,10 +13,13 @@ import reactor.core.scheduler.Schedulers;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/transfer")
 public class TransferAgentController {
+
+    private static final String AWAIT_SUPERVISOR_NODE = "await_supervisor";
 
     private final CompiledGraph<TransferAgentState> graph;
 
@@ -23,18 +28,43 @@ public class TransferAgentController {
     }
 
     @PostMapping(value = "/query/agent", produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<TransferResponse> queryAgent(@RequestBody TransferRequest request) {
+    public Mono<AgentTransferResponse> queryAgent(@RequestBody TransferRequest request) {
         Map<String, Object> inputs = buildInputs(request);
+        String threadId = UUID.randomUUID().toString();
+        RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
         return Mono.fromCallable(() -> {
-            var result = graph.invoke(inputs);
-            String draftAnswer = result
-                    .map(TransferAgentState::draftAnswer)
-                    .filter(s -> !s.isBlank())
-                    .orElseThrow(() -> new IllegalStateException("Agent graph produced no output"));
-            return TransferResponseParser.parse(draftAnswer);
+            graph.invoke(inputs, config);
+            return toAgentResponse(config, threadId);
         })
         .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    // Resumes a run that paused at await_supervisor. The supervisor's decision/note are merged
+    // into graph state and the run continues to END — it does not re-invoke the LLM.
+    @PostMapping(value = "/query/agent/resume", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<AgentTransferResponse> resume(@RequestBody SupervisorDecisionRequest request) {
+        RunnableConfig config = RunnableConfig.builder().threadId(request.threadId()).build();
+        Map<String, Object> resumeData = new HashMap<>();
+        resumeData.put("supervisorDecision", request.decision());
+        resumeData.put("supervisorNote", request.note() == null ? "" : request.note());
+
+        return Mono.fromCallable(() -> {
+            graph.invoke(GraphInput.resume(resumeData), config);
+            return toAgentResponse(config, request.threadId());
+        })
+        .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private AgentTransferResponse toAgentResponse(RunnableConfig config, String threadId) {
+        var snapshot = graph.getState(config);
+        String draftAnswer = snapshot.state().draftAnswer();
+        if (draftAnswer.isBlank()) {
+            throw new IllegalStateException("Agent graph produced no output");
+        }
+        TransferResponse response = TransferResponseParser.parse(draftAnswer);
+        boolean awaitingSupervisor = AWAIT_SUPERVISOR_NODE.equals(snapshot.next());
+        return new AgentTransferResponse(response, awaitingSupervisor, threadId);
     }
 
     private static Map<String, Object> buildInputs(TransferRequest req) {

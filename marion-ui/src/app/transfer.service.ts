@@ -1,16 +1,21 @@
 import { inject, Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { TransferRequest, TransferResponse, StreamEvent } from './transfer.model';
+import { TransferRequest, StreamEvent, AgentTransferResponse, SupervisorDecisionRequest } from './transfer.model';
 
 @Injectable({ providedIn: 'root' })
 export class TransferService {
   private readonly http = inject(HttpClient);
   private readonly url = '/api/transfer/query/agent';
+  private readonly resumeUrl = '/api/transfer/query/agent/resume';
   private readonly streamUrl = '/api/transfer/stream';
 
-  query(request: TransferRequest): Observable<TransferResponse> {
-    return this.http.post<TransferResponse>(this.url, request);
+  query(request: TransferRequest): Observable<AgentTransferResponse> {
+    return this.http.post<AgentTransferResponse>(this.url, request);
+  }
+
+  resume(request: SupervisorDecisionRequest): Observable<AgentTransferResponse> {
+    return this.http.post<AgentTransferResponse>(this.resumeUrl, request);
   }
 
   stream(request: TransferRequest): Observable<StreamEvent> {

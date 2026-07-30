@@ -14,6 +14,7 @@ import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphDefinition;
 import org.bsc.langgraph4j.GraphStateException;
 import org.bsc.langgraph4j.StateGraph;
+import org.bsc.langgraph4j.checkpoint.MemorySaver;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -212,8 +213,9 @@ public class TransferAgentGraph {
                         updates.put("draftAnswer", answer);
                         updates.put("cycleCount", state.cycleCount() + 1);
                         try {
-                            TransferResponseParser.parse(answer);
+                            var parsed = TransferResponseParser.parse(answer);
                             updates.put("parseError", "");
+                            updates.put("supervisorReferral", parsed.supervisorReferral());
                         } catch (IllegalArgumentException e) {
                             updates.put("parseError", e.getMessage());
                         }
@@ -221,18 +223,52 @@ public class TransferAgentGraph {
                     })
                 ))
 
+                // Gate node: never runs any logic of its own. Its only purpose is a named
+                // interruptBefore() target — the graph pauses here whenever GENERATE produced
+                // a referral, so a human supervisor can review before the run reaches END.
+                .addNode("await_supervisor", node_async(state -> Map.of()))
+
                 .addEdge(START, "retrieve")
                 .addEdge("retrieve", "tool_fetch")
                 .addEdge("tool_fetch", "generate")
                 .addConditionalEdges("generate",
-                        edge_async(state -> state.parseError().isEmpty() || state.cycleCount() >= 2
-                                ? "end" : "generate"),
-                        Map.of("generate", "generate", "end", END))
+                        edge_async(TransferAgentGraph::routeAfterGenerate),
+                        Map.of("generate", "generate", "await", "await_supervisor", "end", END))
+                // Resuming re-enters here and always falls through to a second GENERATE pass —
+                // by the time this node's body runs, a resume has always supplied a decision
+                // (see routeAfterGenerate: postReview short-circuits before "await" is ever reached again).
+                .addEdge("await_supervisor", "generate")
 
-                // recursionLimit is the backstop: 3 nodes × 2 cycles + retrieve + tool_fetch = 8
-                .compile(CompileConfig.builder().recursionLimit(10).build());
+                // recursionLimit is a backstop, not a tight budget: retrieve + tool_fetch + up to
+                // FIRST_PASS_MAX_CYCLES generate cycles + await + up to POST_REVIEW_MAX_CYCLES more
+                // generate cycles + end.
+                .compile(CompileConfig.builder()
+                        .recursionLimit(14)
+                        .checkpointSaver(new MemorySaver())
+                        .interruptBefore("await_supervisor")
+                        .build());
 
         return compiled;
+    }
+
+    private static final int FIRST_PASS_MAX_CYCLES = 2;
+    private static final int POST_REVIEW_MAX_CYCLES = 2;
+
+    private static String routeAfterGenerate(TransferAgentState state) {
+        boolean postReview = state.supervisorDecision().isPresent();
+        int cycleCap = postReview
+                ? FIRST_PASS_MAX_CYCLES + POST_REVIEW_MAX_CYCLES
+                : FIRST_PASS_MAX_CYCLES;
+
+        if (!state.parseError().isEmpty() && state.cycleCount() < cycleCap) {
+            return "generate";
+        }
+        // Once a supervisor decision has been folded in, never re-pause — the decision already
+        // happened. Only a fresh (non-postReview) referral routes to await_supervisor.
+        if (!postReview && state.parseError().isEmpty() && state.supervisorReferral()) {
+            return "await";
+        }
+        return "end";
     }
 
     private static String buildContext(List<RetrievalResult> hits) {
@@ -322,18 +358,59 @@ public class TransferAgentGraph {
 
         sb.append("\nQUESTION: ").append(state.question());
 
-        if (state.cycleCount() > 0) {
-            sb.append("\n\n[RETRY ").append(state.cycleCount()).append("] ");
-            String err = state.parseError();
-            if (!err.isBlank()) {
-                sb.append("Your previous response could not be parsed. Error: ").append(err).append(" ");
-            } else {
-                sb.append("Your previous response did not produce valid JSON. ");
-            }
-            sb.append("Output ONLY a JSON object — no markdown, no code fences, no // comments. ")
+        // Independent of any parse-retry below: whenever a supervisor decision has been merged
+        // into state (i.e. this GENERATE call is the post-resume pass), always include it — even
+        // on a parse-retry of the post-review pass itself, or the model loses the decision context.
+        if (state.supervisorDecision().isPresent()) {
+            sb.append("\n\n").append(buildSupervisorReviewBlock(state));
+        }
+
+        if (!state.parseError().isEmpty()) {
+            sb.append("\n\n[RETRY ").append(state.cycleCount()).append("] ")
+              .append("Your previous response could not be parsed. Error: ").append(state.parseError()).append(" ")
+              .append("Output ONLY a JSON object — no markdown, no code fences, no // comments. ")
               .append("Start immediately with { and end with }.");
         }
 
+        return sb.toString();
+    }
+
+    private static String buildSupervisorReviewBlock(TransferAgentState state) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("*** SUPERVISOR REVIEW COMPLETE — this supersedes any STEP 1 trigger banners above;\n");
+        sb.append("    do not re-evaluate STEP 1, the supervisor has already ruled on the exception. ***\n");
+        sb.append("Decision: ").append(state.supervisorDecision().orElse("UNKNOWN")).append("\n");
+        state.supervisorNote().filter(n -> !n.isBlank())
+                .ifPresent(n -> sb.append("Supervisor note: \"").append(n).append("\"\n"));
+        sb.append("\nYOUR PRIOR ANALYSIS (before supervisor review):\n").append(state.draftAnswer()).append("\n");
+        sb.append("""
+
+                A supervisor has reviewed the exception flagged in your prior analysis above and
+                rendered the decision shown. Produce the FINAL response now, replacing your prior
+                analysis entirely.
+
+                If Decision is APPROVED:
+                  - The referral exception is resolved — proceed with STEP 2 normal processing as if
+                    it never blocked the transfer. Compute checklist, fees, and taxOwed exactly per
+                    STEP 2, using the RETRIEVED CONTEXT and DATABASE LOOKUP RESULTS above.
+                  - Move any items from your prior conditionalChecklist into "checklist", plus
+                    anything else STEP 2 requires.
+                  - Set supervisorReferral=false, referralForm=null, conditionalChecklist=null,
+                    conditionalNote=null. You may leave referralReason as-is for the audit trail.
+                  - In "reasoning", briefly note that supervisor approval was granted (reference the
+                    supervisor note above if one was given).
+
+                If Decision is DENIED:
+                  - The transfer cannot proceed. Keep supervisorReferral=true, checklist=null,
+                    taxOwed=null, conditionalChecklist=null.
+                  - Set conditionalNote to explain the transfer was denied by the supervisor, quoting
+                    their note if one was given.
+                  - In "reasoning", state plainly that the supervisor denied the referral and why, so
+                    the record is auditable.
+
+                Output ONLY the JSON object in the schema already described above — no markdown, no
+                commentary outside the JSON.
+                """);
         return sb.toString();
     }
 

@@ -286,6 +286,100 @@ Stop the MCP server (`Ctrl-C` on its terminal) then submit any scenario with a V
 
 ---
 
+## Group G — Human-in-the-Loop Supervisor Review
+
+Exercises the LangGraph4j checkpoint pause/resume on `/api/transfer/query/agent` and
+`/api/transfer/query/agent/resume`. Only the agent endpoint has a checkpointer —
+`/api/transfer/query` and `/api/transfer/stream` never pause, since they don't run the graph.
+
+### G1 — Approve feeds the decision back to the model and produces a resolved transfer
+
+Reuses the B2 scenario. Through the UI: submit it, confirm the amber "Awaiting Supervisor
+Decision" card appears under the red referral banner, add a note, click **Approve**.
+
+Direct (writes the resume body to a file rather than shell-interpolating it — the note text's
+punctuation, e.g. em dashes, is exactly the kind of thing that breaks naive `-d "...$VAR..."`
+quoting; also extracts `threadId` with `grep`/`sed` rather than `python3 -c`, since a native
+Windows `python3` and Git Bash's `/tmp` can resolve to different filesystems):
+
+```bash
+curl -s -X POST http://localhost:8080/api/transfer/query/agent \
+  -H "Content-Type: application/json" \
+  -d '{"question":"A customer presents a Halloway title with the brand '"'"'Rebuilt'"'"'. What brand should appear on the Marion title and what does the examiner do?","vehicleVin":"1HAL0000001000001","originState":"Halloway","transferType":"RELOCATION","county":"Marion County"}' \
+  | tee /tmp/g1-pause.json
+
+THREAD=$(grep -o '"threadId":"[^"]*"' /tmp/g1-pause.json | sed 's/.*:"//;s/"$//')
+
+cat > /tmp/g1-resume-body.json << 'EOF'
+{"threadId":"REPLACE_ME","decision":"APPROVED","note":"Reconstructed brand confirmed against title photo, cleared to proceed."}
+EOF
+sed -i "s/REPLACE_ME/$THREAD/" /tmp/g1-resume-body.json
+
+curl -s -X POST http://localhost:8080/api/transfer/query/agent/resume \
+  -H "Content-Type: application/json" \
+  --data-binary @/tmp/g1-resume-body.json
+```
+
+**Expected:**
+- First response: `awaitingSupervisorDecision=true`, `response.supervisorReferral=true`, `checklist=null`, a `threadId` present.
+- Second response: `awaitingSupervisorDecision=false`, same `threadId`, `response.supervisorReferral=false`.
+- `response.checklist` is now populated — items from the first response's `conditionalChecklist`
+  folded in, plus anything else STEP 2 requires (fees, `taxOwed` computed).
+- `response.reasoning` explicitly references the supervisor's approval (and note, if one was given)
+  — it is **not** the same text as the first response. This is a genuine second LLM call: check
+  `GET /actuator/metrics/marion.agent.node?tag=node:generate` COUNT increases by exactly 1 more
+  after resume (2 total for one referral+decision cycle), confirming GENERATE really ran twice —
+  once to find the exception, once to finalize after the supervisor's ruling.
+
+---
+
+### G2 — Deny keeps the referral blocked, but folds the reason into the record
+
+Same setup as G1 but `"decision":"DENIED"`. **Expected:**
+- `awaitingSupervisorDecision=false`, `response.supervisorReferral=true` (still — the transfer
+  remains blocked, it's just no longer *pending*), `checklist=null`, `taxOwed=null`,
+  `conditionalChecklist=null` (there is nothing left to condition on — the case is closed as denied).
+- `response.conditionalNote` explains the transfer was denied, incorporating the supervisor's note.
+- `response.reasoning` states plainly that the supervisor denied the referral and why.
+
+**Risk anticipated while building this (not yet observed failing, but worth watching in the eval
+suite):** the post-review prompt still contains the *original* STEP 1 trigger banner (e.g.
+`*** BRAND STAMP DETECTED ... supervisorReferral=true REQUIRED ***`) earlier in the same prompt,
+with the supervisor's decision appended later. Given this project's documented qwen2.5:7b
+contamination issues elsewhere (PROJECT.md gotchas table), a weaker model could plausibly re-trigger
+STEP 1 from the earlier banner instead of honoring the later decision. Pre-emptively guarded with an
+explicit override line at the top of the supervisor-review block: *"this supersedes any STEP 1
+trigger banners above — do not re-evaluate STEP 1."* Both G1 (Approve) and G2 (Deny) passed
+correctly with the override in place on the first live run — if this ever regresses, that banner
+conflict is the first thing to suspect.
+
+---
+
+### G3 — Resuming an unknown or already-restarted threadId fails loudly
+
+```bash
+curl -s -X POST http://localhost:8080/api/transfer/query/agent/resume \
+  -H "Content-Type: application/json" \
+  -d '{"threadId":"00000000-0000-0000-0000-000000000000","decision":"APPROVED"}' \
+  -w "\n\nHTTP %{http_code}"
+```
+
+**Expected:** HTTP 500 `{"error":"AGENT_ERROR","detail":"Missing Checkpoint!"}` — `MemorySaver` has
+no record of this thread. This is the concrete, testable face of the "in-process only" limitation:
+restart `marion-app` between G1's pause and resume steps and the real `threadId` will fail exactly
+this way too.
+
+---
+
+### G4 — Clean transfers never pause (regression check)
+
+Re-run A1 (or any Group A/C scenario) through `/query/agent`. **Expected:**
+`awaitingSupervisorDecision=false` on the very first response, no `await_supervisor` step visible in
+`marion.agent.node` metrics (only `retrieve`, `tool-fetch`, `generate` accrue time) — confirms the
+conditional edge only routes to the gate node when `supervisorReferral=true`, never on the happy path.
+
+---
+
 ## Metrics Verification
 
 After running several scenarios, check node latency breakdown:

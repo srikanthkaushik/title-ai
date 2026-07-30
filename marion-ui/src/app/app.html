@@ -104,9 +104,13 @@
                 (click)="selectHistory(entry)">
                 <div class="d-flex justify-content-between align-items-center">
                   @if (entry.response) {
-                    <span class="badge {{ entry.response.supervisorReferral ? 'bg-danger' : 'bg-success' }} me-2">
-                      {{ entry.response.supervisorReferral ? 'Referral' : 'OK' }}
-                    </span>
+                    @if (entry.awaitingSupervisorDecision) {
+                      <span class="badge bg-warning text-dark me-2">Pending Review</span>
+                    } @else {
+                      <span class="badge {{ entry.response.supervisorReferral ? 'bg-danger' : 'bg-success' }} me-2">
+                        {{ entry.response.supervisorReferral ? 'Referral' : 'OK' }}
+                      </span>
+                    }
                   } @else {
                     <span class="badge bg-warning text-dark me-2">&#128274; Blocked</span>
                   }
@@ -194,6 +198,52 @@
               }
             </div>
           </div>
+
+          <!-- Human-in-the-loop: run is paused at a LangGraph4j checkpoint (await_supervisor)
+               until a supervisor records a decision. Approve/Deny resumes the same run. -->
+          @if (pendingThreadId()) {
+            <div class="card shadow-sm border-warning mb-3 no-print">
+              <div class="card-header fw-semibold text-warning-emphasis bg-warning-subtle">
+                Awaiting Supervisor Decision
+              </div>
+              <div class="card-body">
+                <p class="text-muted small">
+                  This run is paused — the agent will not proceed until a supervisor
+                  approves or denies this referral.
+                </p>
+                <textarea
+                  class="form-control mb-3"
+                  rows="2"
+                  placeholder="Supervisor note (optional)…"
+                  [value]="supervisorNote()"
+                  (input)="supervisorNote.set($any($event.target).value)">
+                </textarea>
+                <div class="d-flex gap-2">
+                  <button
+                    type="button"
+                    class="btn btn-success"
+                    [disabled]="deciding()"
+                    (click)="decide('APPROVED')">
+                    @if (deciding()) {
+                      <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                    }
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-outline-danger"
+                    [disabled]="deciding()"
+                    (click)="decide('DENIED')">
+                    Deny
+                  </button>
+                </div>
+              </div>
+            </div>
+          } @else {
+            <div class="alert alert-secondary small mb-3 no-print">
+              Supervisor decision recorded for this run — no further action needed.
+            </div>
+          }
         } @else if (res.checklist) {
           <div class="alert alert-success mb-3">
             &#10003; Transfer can proceed — no supervisor escalation required.

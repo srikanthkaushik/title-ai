@@ -1,8 +1,9 @@
 import { Component, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePipe, DecimalPipe } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { TransferService } from './transfer.service';
-import { HistoryEntry, TransferRequest, TransferResponse } from './transfer.model';
+import { HistoryEntry, TransferRequest, TransferResponse, SupervisorDecision } from './transfer.model';
 
 @Component({
   selector: 'app-root',
@@ -36,6 +37,9 @@ export class App {
   readonly streamingText = signal<string>('');
   readonly copied = signal(false);
   readonly notes = signal<string>('');
+  readonly pendingThreadId = signal<string | null>(null);
+  readonly deciding = signal(false);
+  readonly supervisorNote = signal<string>('');
   private activeHistoryId = signal<number | null>(null);
   private historyCounter = 0;
 
@@ -49,9 +53,11 @@ export class App {
     this.errorMessage.set(null);
     this.errorCode.set(null);
     this.showReasoning.set(false);
-    this.phase.set('');
+    this.phase.set('Analyzing…');
     this.streamingText.set('');
     this.notes.set('');
+    this.pendingThreadId.set(null);
+    this.supervisorNote.set('');
     this.activeHistoryId.set(null);
 
     const request: TransferRequest = {
@@ -62,53 +68,31 @@ export class App {
       ...(this.transferType      && { transferType: this.transferType }),
     };
 
-    this.transferService.stream(request).subscribe({
-      next: (event) => {
-        if (event.type === 'phase') {
-          this.phase.set(event.message);
-        } else if (event.type === 'token') {
-          this.streamingText.update(t => t + event.text);
-        } else if (event.type === 'result') {
-          this.response.set(event.data);
-          this.phase.set('');
-          this.streamingText.set('');
-          const id = ++this.historyCounter;
-          this.activeHistoryId.set(id);
-          this.history.update(h => [{
-            id,
-            timestamp: new Date(),
-            question: this.question,
-            response: event.data,
-            errorCode: null,
-            errorMessage: null,
-            notes: ''
-          }, ...h]);
-          this.loading.set(false);
-        } else if (event.type === 'error') {
-          this.errorMessage.set(event.message);
-          this.errorCode.set('STREAM_ERROR');
-          this.phase.set('');
-          this.streamingText.set('');
-          const id = ++this.historyCounter;
-          this.activeHistoryId.set(id);
-          this.history.update(h => [{
-            id,
-            timestamp: new Date(),
-            question: this.question,
-            response: null,
-            errorCode: 'STREAM_ERROR',
-            errorMessage: event.message,
-            notes: ''
-          }, ...h]);
-          this.loading.set(false);
-        }
-      },
-      error: (err) => {
-        const message = (err as Error).message ?? 'Stream connection failed';
-        this.errorMessage.set(message);
-        this.errorCode.set('CONNECTION_ERROR');
+    this.transferService.query(request).subscribe({
+      next: (agentResponse) => {
+        this.response.set(agentResponse.response);
         this.phase.set('');
-        this.streamingText.set('');
+        this.pendingThreadId.set(agentResponse.awaitingSupervisorDecision ? agentResponse.threadId : null);
+        const id = ++this.historyCounter;
+        this.activeHistoryId.set(id);
+        this.history.update(h => [{
+          id,
+          timestamp: new Date(),
+          question: this.question,
+          response: agentResponse.response,
+          errorCode: null,
+          errorMessage: null,
+          notes: '',
+          threadId: agentResponse.threadId,
+          awaitingSupervisorDecision: agentResponse.awaitingSupervisorDecision
+        }, ...h]);
+        this.loading.set(false);
+      },
+      error: (err: HttpErrorResponse) => {
+        const body = err.error as { error?: string; message?: string; detail?: string } | null;
+        this.errorCode.set(body?.error ?? 'CONNECTION_ERROR');
+        this.errorMessage.set(body?.message ?? body?.detail ?? (err.message || 'Request failed'));
+        this.phase.set('');
         const id = ++this.historyCounter;
         this.activeHistoryId.set(id);
         this.history.update(h => [{
@@ -116,14 +100,46 @@ export class App {
           timestamp: new Date(),
           question: this.question,
           response: null,
-          errorCode: 'CONNECTION_ERROR',
-          errorMessage: message,
-          notes: ''
+          errorCode: this.errorCode(),
+          errorMessage: this.errorMessage(),
+          notes: '',
+          threadId: null,
+          awaitingSupervisorDecision: false
         }, ...h]);
         this.loading.set(false);
+      }
+    });
+  }
+
+  // Supervisor approves or denies a paused referral. Resumes the LangGraph4j checkpoint
+  // identified by pendingThreadId — this does not re-invoke the LLM, it merges the
+  // decision into graph state and lets the run fall through to END.
+  decide(decision: SupervisorDecision): void {
+    const threadId = this.pendingThreadId();
+    if (!threadId) return;
+
+    this.deciding.set(true);
+    this.transferService.resume({
+      threadId,
+      decision,
+      ...(this.supervisorNote().trim() && { note: this.supervisorNote().trim() })
+    }).subscribe({
+      next: (agentResponse) => {
+        this.response.set(agentResponse.response);
+        this.pendingThreadId.set(null);
+        this.deciding.set(false);
+        const id = this.activeHistoryId();
+        if (id !== null) {
+          this.history.update(h => h.map(e => e.id === id
+            ? { ...e, response: agentResponse.response, awaitingSupervisorDecision: false }
+            : e));
+        }
       },
-      complete: () => {
-        this.loading.set(false);
+      error: (err: HttpErrorResponse) => {
+        const body = err.error as { error?: string; message?: string; detail?: string } | null;
+        this.errorCode.set(body?.error ?? 'CONNECTION_ERROR');
+        this.errorMessage.set(body?.message ?? body?.detail ?? (err.message || 'Resume failed'));
+        this.deciding.set(false);
       }
     });
   }
@@ -136,6 +152,8 @@ export class App {
     this.phase.set('');
     this.streamingText.set('');
     this.notes.set(entry.notes);
+    this.pendingThreadId.set(entry.awaitingSupervisorDecision ? entry.threadId : null);
+    this.supervisorNote.set('');
     this.activeHistoryId.set(entry.id);
   }
 
