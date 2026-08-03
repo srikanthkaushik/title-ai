@@ -324,12 +324,17 @@ POST /api/transfer/query/agent
 ```
 
 ## MCP server tools (port 8090)
-- `lookup_title_lien(vin)` — vehicle record + lien status
-- `decode_vin(vin)` — make/model/year
-- `lookup_tax_reciprocity(originState)` — agreement Y/N + rate
-- `lookup_fees(transferType, county)` — itemized fee schedule
-- `check_county_emissions(county)` — emissions requirement
-- `check_inspection_stations(county, inspectionType)` — available stations
+7 tools total on the server; only 4 are wrapped by `McpToolService`, and of those, the agent's
+`tool_fetch` node only ever actually calls 3 (`lookupTitleLien`, `lookupTaxReciprocity`,
+`lookupFees` — `checkCountyEmissions` is wrapped but unused). `decode_vin`, `lookup_fee_by_code`,
+and `check_inspection_stations` aren't reachable from the app at all — server-side only.
+- `lookup_title_lien(vin)` — vehicle record + lien status **(agent-reachable)**
+- `decode_vin(vin)` — make/model/year *(not wrapped by McpToolService)*
+- `lookup_tax_reciprocity(originState)` — agreement Y/N + rate **(agent-reachable)**
+- `lookup_fees(transferType, county)` — itemized fee schedule **(agent-reachable)**
+- `lookup_fee_by_code(feeCode)` — single fee lookup *(not wrapped by McpToolService)*
+- `check_county_emissions(county)` — emissions requirement *(wrapped, never called by the agent)*
+- `check_inspection_stations(county, inspectionType)` — available stations *(not wrapped)*
 
 ## Known quality issues (not system bugs)
 - Retrieval: `procedure-ch4-4-elt-conversion.md` doesn't surface in top-5 for the Verdana ELT
@@ -375,6 +380,34 @@ the next attempt doesn't have to re-derive it.
 - `RetrievalEvalTest`'s A2 stays as an either/or assertion (`procedure-ch4-4-elt-conversion.md` OR
   `admin-rule-2-1-transfer-procedures.md`), now with the full diagnosis in a comment instead of a
   one-line "baseline note" — verified both docs still reliably satisfy it after the content edit.
+
+## Fixed — active lien in VEHICLE_RECORD tool data ignored when not also mentioned in question text
+- **Found while building an MCP-tool-coverage test.** Asked for a test case exercising every MCP
+  tool the agent uses; while verifying it, tried a VIN seeded with `lien_status: ACTIVE` where the
+  question text itself said nothing about a lien (isolating "does tool data alone trigger the
+  referral" from the usual case where the question also mentions it). It didn't —
+  `supervisorReferral` came back `false`.
+- Confirmed this wasn't an MCP problem: called `McpToolService.lookupTitleLien()` directly,
+  bypassing the agent entirely, and it correctly returned `"lien_status":"ACTIVE"`,
+  `"lienholder_name":"Midwest Auto Finance"`. All 4 `McpToolService`-wrapped tools
+  (`lookup_title_lien`, `lookup_tax_reciprocity`, `lookup_fees`, `check_county_emissions`) verified
+  working correctly in isolation this way.
+- **Root cause**: brand stamps already got an explicit `*** BRAND STAMP DETECTED ***` banner
+  injected into the prompt (`BRAND_PATTERN` regex in `TransferAgentGraph.java`) specifically
+  because qwen2.5:7b needed the extra callout to reliably notice a `"brand"` field inside the raw
+  DATABASE LOOKUP RESULTS JSON blob. Active liens had no equivalent — `"lien_status":"ACTIVE"` was
+  present in the same blob, just without a banner forcing attention to it, and the model missed it.
+- Fixed by adding `ACTIVE_LIEN_PATTERN` + `LIENHOLDER_PATTERN`, injecting an analogous
+  `*** ACTIVE LIEN DETECTED ***` banner (naming the lienholder) whenever `"lien_status":"ACTIVE"`
+  appears in tool data — same treatment as the brand case.
+- **Verified live** across 3 runs on the originally-failing VIN (now consistently
+  `supervisorReferral=true` with the correct lienholder in `referralReason`), plus confirmed no
+  false positive on a clean VIN and a `RELEASED`-status VIN.
+- **Note on what this doesn't cover**: `decode_vin`, `lookup_fee_by_code`, and
+  `check_inspection_stations` are exposed by the MCP server but never wrapped by `McpToolService`
+  at all — the agent has no way to call them. `check_county_emissions` is wrapped but never
+  invoked by the agent graph either (emissions eligibility is determined by prompt reasoning over
+  age/county, not a tool call). Not addressed here — out of scope for this fix.
 
 ## Fixed — `referralReason` copying the prompt's own brand-equivalency example verbatim
 - **Root cause found via the Supervisor Queue UI**: user spotted a lien-only referral (Crestwood,

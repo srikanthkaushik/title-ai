@@ -309,6 +309,8 @@ public class TransferAgentGraph {
     }
 
     private static final Pattern BRAND_PATTERN            = Pattern.compile("\"brand\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern ACTIVE_LIEN_PATTERN      = Pattern.compile("\"lien_status\"\\s*:\\s*\"ACTIVE\"");
+    private static final Pattern LIENHOLDER_PATTERN       = Pattern.compile("\"lienholder_name\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern RATE_PATTERN             = Pattern.compile("\"origin_rate_pct\"\\s*:\\s*([\\d\\.]+)");
     private static final Pattern AGREEMENT_PATTERN        = Pattern.compile("\"has_agreement\"\\s*:\\s*(true|false)");
     private static final Pattern BRAND_IN_QUESTION_PATTERN = Pattern.compile(
@@ -330,6 +332,17 @@ public class TransferAgentGraph {
             if (m.find()) {
                 sb.append("*** BRAND STAMP DETECTED IN VEHICLE RECORD: \"").append(m.group(1))
                   .append("\" — This is a BRANDED TITLE. Per STEP 1: supervisorReferral=true REQUIRED. ***\n");
+            }
+
+            // Explicitly surface an active lien so STEP 1 fires reliably even when the only
+            // signal is tool data, not question text — observed qwen2.5:7b missing a plain
+            // "lien_status":"ACTIVE" field in VEHICLE_RECORD without a callout banner like this
+            // one (it does reliably notice a brand, which already had this treatment).
+            if (ACTIVE_LIEN_PATTERN.matcher(toolData).find()) {
+                Matcher lh = LIENHOLDER_PATTERN.matcher(toolData);
+                String holder = lh.find() ? lh.group(1) : "unspecified lienholder";
+                sb.append("*** ACTIVE LIEN DETECTED IN VEHICLE RECORD: lienholder \"").append(holder)
+                  .append("\" — Per STEP 1: supervisorReferral=true REQUIRED. ***\n");
             }
 
             // Lock both rates and pre-compute intermediates so the model cannot substitute a wrong rate

@@ -162,6 +162,35 @@ got flattened back into an unconditional instruction.
 
 ---
 
+### B6 — Active lien signaled ONLY by VEHICLE_RECORD tool data, not question text
+
+| Field | Value |
+|---|---|
+| Scenario | `Customer purchased this vehicle in Crestwood and wants to title it in Marion.` (no lien mentioned) |
+| VIN | `1CST0000001000003` (seeded with `lien_status: ACTIVE`, lienholder "Midwest Auto Finance") |
+| Origin State | `Crestwood` |
+| Transfer Type | `PURCHASE` |
+| County | `Marion County` |
+
+**Expected:** `supervisorReferral=true`, `referralReason` names "Midwest Auto Finance" — same
+result as B1, but B1's question text *also* mentions the lien directly (a second, redundant
+signal). This scenario deliberately removes that redundancy to test whether tool data alone is
+enough.
+
+**Regression history:** this scenario originally returned `supervisorReferral=false` —
+confirmed via a direct (non-agent) call to `McpToolService.lookupTitleLien()` that the tool
+itself correctly returned `"lien_status":"ACTIVE"`, so the miss was purely in how the model used
+that data, not the MCP tool. Brand stamps already got an explicit `*** BRAND STAMP DETECTED ***`
+banner injected into the prompt (`BRAND_PATTERN` in `TransferAgentGraph.java`) to force
+attention; active liens had no equivalent. Fixed by adding `ACTIVE_LIEN_PATTERN` +
+`LIENHOLDER_PATTERN`, injecting an analogous `*** ACTIVE LIEN DETECTED ***` banner whenever
+`"lien_status":"ACTIVE"` appears in tool data. Verified live across 3 runs (consistent), plus
+confirmed no false positive on a clean VIN and a `RELEASED`-status VIN (`1CST0000001000002`).
+If this regresses, suspect the banner's regex not matching a changed MCP response shape before
+suspecting the model.
+
+---
+
 ## Group C — Emissions (STEP 2 branching)
 
 ### C1 — Emissions required (metro county, vehicle < 25 years)
