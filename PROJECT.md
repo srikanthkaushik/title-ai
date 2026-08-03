@@ -246,13 +246,44 @@ Initial version resumed straight to END without the LLM ever seeing the decision
     other approves via the Supervisor Queue with zero communication back to the first tab — the
     first tab's pending card cleared and its "decision recorded" message appeared with no manual
     refresh, confirming the poll alone drove the update.
-  - **Side observation, not a bug in this fix**: on one of the approve runs during this testing,
-    qwen2.5:7b's second GENERATE pass didn't fully apply the APPROVED instructions — it left
-    `supervisorReferral=true` and `checklist=null` instead of resolving them, even with the override
-    line in the post-review prompt block. This is the same class of risk anticipated (but, per the
-    existing G2 note, not yet observed) for DENIED — now also observed on APPROVE. Not investigated
-    further yet; if this recurs, it's a candidate for the same kind of explicit-instruction
-    hardening already applied elsewhere (e.g. the STEP 1 override line, the tax-rate banner).
+- **Fixed — race condition in the new status endpoint, not model variance (correction to the note
+  above)**: after shipping the Examiner auto-update fix, the user reported it "only refreshes the
+  supervisor approval section, not the reasoning or the docs list" — the pending card cleared, but
+  the checklist/reasoning stayed frozen on the pre-approval content. Initially misdiagnosed (see the
+  now-corrected note above) as qwen2.5:7b failing to apply the APPROVED decision. Root-caused instead
+  by logging the actual network responses the Examiner's poll received: `awaitingSupervisorDecision`
+  had flipped to `false` while `checklist` was still `null` and `supervisorReferral` was still `true`
+  — i.e. the poll caught the checkpoint in a real transient state, not a finished one.
+  - `toAgentResponse()`'s `awaitingSupervisor` was computed as `AWAIT_SUPERVISOR_NODE.equals(next())`
+    — "not currently sitting at the gate." That's equivalent to "finished" only when read
+    *synchronously* right inside `queryAgent()`/`resume()`, immediately after their own `invoke()`
+    call returns — at that point `next()` can only be `"await_supervisor"` (just paused) or
+    null/`END` (just finished), because `invoke()` itself doesn't return at any other point.
+  - The new `agentStatus()` (`GET /query/agent/{threadId}`) breaks that assumption: it reads state
+    from an *independent* request that can race a concurrent `resume()` running on another
+    thread/session. Mid-resume, LangGraph4j commits a checkpoint the instant it leaves
+    `await_supervisor` — at that checkpoint, `next()` is already `"generate"` (not
+    `"await_supervisor"`), but the second GENERATE pass hasn't run yet, so `draftAnswer` is still
+    the *first* pass's stale JSON. A poll landing in that narrow window read `awaitingSupervisor =
+    false` (since next() ≠ "await_supervisor") together with the old, unresolved `TransferResponse`
+    — and the Examiner poll, on seeing `awaitingSupervisorDecision=false`, stopped polling and
+    permanently froze on that stale snapshot.
+  - Fixed by changing the definition to an actual terminal check: `finished = next() == null ||
+    GraphDefinition.END.equals(next())`, `awaitingSupervisor = !finished`. Provably equivalent to
+    the old formula for the two synchronous call sites (still only ever observes
+    `"await_supervisor"` or null/`END` there), but now correctly keeps reporting "still awaiting"
+    through the in-flight window for the concurrent-read case.
+  - **Verified live** by logging the Examiner's actual poll responses across a full approve cycle:
+    two consecutive polls correctly showed `awaiting:true` (with the transient stale data) before a
+    later poll showed `awaiting:false` with the real, finalized `checklist`/`fees`/`taxOwed` — and
+    the UI rendered the finalized state correctly (Required Documents, Fees Due to DMV, Additional
+    Sales Tax cards all present).
+  - **Also fixed as a related robustness gap, found via a self-inflicted test mistake**: while
+    reproducing this, an accidental resume call with an empty `threadId` (a shell-variable scoping
+    bug in a throwaway test command, not app code) left a poisoned zero-checkpoint entry in
+    `ThreadTrackingMemorySaver`'s cache. `pendingReferrals()` wasn't resilient to that — one
+    unreadable thread threw and broke the audit for *every* thread. Fixed by wrapping the per-thread
+    read in a try/catch that logs and skips, so one bad entry can't take down the whole endpoint.
 
 ## Key gotchas
 
@@ -276,6 +307,8 @@ Initial version resumed straight to END without the LLM ever seeing the decision
 | LangGraph4j 1.8.20 resuming a paused run | Use `graph.invoke(GraphInput.resume(map), config)` with the SAME `threadId` — passing a plain `Map` to `invoke()` restarts from START instead of resuming |
 | `mvn -pl marion-app spring-boot:run` on Windows spawns TWO `java.exe` processes | One is the Maven launcher (`org.codehaus.plexus.classworlds.launcher.Launcher`), the other is the actual Spring Boot app (`com.marion.dmv.MarionDmvApplication`). Killing the launcher's PID does NOT stop the app — it keeps holding port 8080. Find the real PID with `Get-CimInstance Win32_Process -Filter "Name='java.exe'" | Where CommandLine -match 'MarionDmvApplication'`, or check `Get-NetTCPConnection -LocalPort 8080 | Select OwningProcess` |
 | Native Windows `python3`/`node` vs Git Bash `/tmp` | They can resolve `/tmp/...` to different filesystems — a file `tee`'d to `/tmp/x.json` in Bash may throw `FileNotFoundError` when opened by a native `python3 -c "..."` in the same command. Extract JSON fields with `grep -o`/`sed` (same shell, same filesystem view) instead of shelling out to `python3` for one-liners |
+| `graph.getState(config).next() != gateNodeId` read from an independent request | Only means "finished" when read synchronously right after your own `invoke()`/`resume()` call — `invoke()` guarantees `next()` is either the interrupt point or null/END at that instant. A *separate* concurrent read (e.g. a polling endpoint) can catch a checkpoint mid-transition (past the gate, next node not yet run) and misreport "done" with stale state. Check for actual terminal `next() == null \|\| END.equals(next())` instead |
+| Shell variables don't persist across separate Bash tool calls | Each Bash invocation may run in a fresh shell — `$THREAD` set in one call is empty in the next. Keep a multi-step curl sequence (capture id → use id) in ONE Bash call, or you'll silently send empty/wrong values downstream |
 
 ## Architecture
 

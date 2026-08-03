@@ -257,6 +257,20 @@ sequenceDiagram
   still pending), and stops on any resolution or on submitting a new query. Verified live: approving from
   a separate Playwright session made the originating tab's pending card clear and its "decision recorded"
   message appear with no manual action in that tab.
+- **`awaitingSupervisorDecision` means "finished," not "not at the gate" — and that distinction only
+  matters for concurrent reads.** `toAgentResponse()` originally computed it as `AWAIT_SUPERVISOR_NODE
+  .equals(next())`. Read synchronously right after `queryAgent()`'s/`resume()`'s own `invoke()` call,
+  that's fine — `invoke()` only ever returns with `next()` equal to the interrupt point or null/`END`.
+  But `agentStatus()` (`GET /query/agent/{threadId}`) reads state from an *independent* request that can
+  race a concurrent `resume()` on another session: mid-resume, LangGraph4j commits a checkpoint the
+  instant it leaves `await_supervisor`, so `next()` briefly reads `"generate"` — not
+  `"await_supervisor"` — while the second GENERATE pass hasn't produced a new `draftAnswer` yet. A poll
+  landing in that window saw `awaitingSupervisor=false` paired with the *first* pass's stale
+  `TransferResponse`, and the Examiner's poll (reasonably) treated `false` as "done" and stopped,
+  freezing on stale content. Fixed by checking for an actual terminal state instead: `next() == null ||
+  END.equals(next())`. Verified by logging the Examiner's real poll responses across an approve cycle —
+  two polls correctly showed the transient not-finished state before the final one showed the resolved
+  `TransferResponse`.
 
 ---
 

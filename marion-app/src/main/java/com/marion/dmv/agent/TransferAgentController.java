@@ -4,6 +4,7 @@ import com.marion.dmv.transfer.TransferRequest;
 import com.marion.dmv.transfer.TransferResponse;
 import com.marion.dmv.transfer.TransferResponseParser;
 import org.bsc.langgraph4j.CompiledGraph;
+import org.bsc.langgraph4j.GraphDefinition;
 import org.bsc.langgraph4j.GraphInput;
 import org.bsc.langgraph4j.RunnableConfig;
 import org.slf4j.Logger;
@@ -79,19 +80,25 @@ public class TransferAgentController {
 
     // Server-side audit of every run currently paused at await_supervisor. MemorySaver never
     // forgets a threadId (we never call graph.release()), so this scans all threads it has ever
-    // seen and filters to the ones whose state snapshot is still parked at the gate node.
+    // seen and filters to the ones whose state snapshot is still parked at the gate node. A single
+    // unreadable thread (e.g. one whose checkpoint list is empty — can happen if a malformed/blank
+    // threadId ever reaches resume() or agentStatus(), which still touches the cache via
+    // computeIfAbsent) must not take down the whole audit for every other thread.
     @GetMapping(value = "/pending-referrals", produces = MediaType.APPLICATION_JSON_VALUE)
     public Mono<List<PendingReferral>> pendingReferrals() {
         return Mono.fromCallable(() -> {
             List<PendingReferral> pending = new ArrayList<>();
             for (String threadId : checkpointSaver.threadIds()) {
-                RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
-                var snapshot = graph.getState(config);
-                if (!AWAIT_SUPERVISOR_NODE.equals(snapshot.next())) {
-                    continue;
+                try {
+                    RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+                    var snapshot = graph.getState(config);
+                    if (!AWAIT_SUPERVISOR_NODE.equals(snapshot.next())) {
+                        continue;
+                    }
+                    pending.add(toPendingReferral(threadId, snapshot.state()));
+                } catch (Exception e) {
+                    log.warn("[pendingReferrals] skipping unreadable threadId={}", threadId, e);
                 }
-                TransferAgentState state = snapshot.state();
-                pending.add(toPendingReferral(threadId, state));
             }
             return pending;
         })
@@ -116,7 +123,17 @@ public class TransferAgentController {
             throw new IllegalStateException("Agent graph produced no output");
         }
         TransferResponse response = TransferResponseParser.parse(draftAnswer);
-        boolean awaitingSupervisor = AWAIT_SUPERVISOR_NODE.equals(snapshot.next());
+        // "Not currently AT the gate" is NOT the same as "finished" — when this is read from
+        // queryAgent()/resume() right after their own synchronous invoke() call, next() can only
+        // be await_supervisor (just paused) or null/END (just finished), so the two were
+        // equivalent. But agentStatus() reads state from an INDEPENDENT request that can race a
+        // concurrent resume() on another thread: mid-resume, the checkpoint can already show
+        // next()=="generate" (past the gate, second GENERATE pass not done yet) while draftAnswer
+        // is still the FIRST pass's stale answer. Treat only a truly terminal next() as "done" —
+        // anything else (including that in-flight window) still counts as awaiting/incomplete.
+        String next = snapshot.next();
+        boolean finished = next == null || GraphDefinition.END.equals(next);
+        boolean awaitingSupervisor = !finished;
         return new AgentTransferResponse(response, awaitingSupervisor, threadId);
     }
 

@@ -458,13 +458,21 @@ from a separate session (see PROJECT.md "Examiner tab was stuck if resolved from
 session"). If this regresses, check that `submit()` and `selectHistory()` still call
 `startPolling()` for a pending `threadId`, and that `GET /query/agent/{threadId}` still exists.
 
-**Separately observed during this testing (not a bug in the polling mechanism itself):** on one
-approve run, qwen2.5:7b's second GENERATE pass didn't fully apply the APPROVED instructions —
-`supervisorReferral` stayed `true` and `checklist` stayed `null` instead of resolving, even with the
-prompt's override line in place. The auto-update mechanism correctly reflected whatever the model
-actually returned; this is LLM instruction-following variance, the same risk class G2's note already
-flagged for DENIED, now also seen on APPROVE. Worth re-running a few times if debugging this area —
-don't assume a single failed run means the polling broke.
+**Second regression note — a real race, not model variance:** shortly after the fix above shipped,
+the user reported it "only refreshes the supervisor approval section, not the reasoning or the docs
+list" — banner cleared, but checklist/reasoning stayed on pre-approval content. Initially
+misdiagnosed as qwen2.5:7b failing to apply APPROVED (a plausible-sounding but wrong theory — see
+PROJECT.md's corrected note). The actual cause: `toAgentResponse()`'s `awaitingSupervisorDecision`
+was `"not currently at the await_supervisor gate"`, which only means "finished" when read
+synchronously right after your own `invoke()`/`resume()` call. `GET /query/agent/{threadId}` reads
+state from an independent request that can race a concurrent `resume()`: mid-resume, the checkpoint
+briefly shows `next()=="generate"` (past the gate, second pass not done) while `draftAnswer` is still
+the stale first-pass JSON — so a poll landing in that window saw `awaitingSupervisorDecision=false`
+paired with `checklist=null`, and stopped polling on that stale snapshot. Fixed by checking for an
+actual terminal state (`next() == null || END.equals(next())`) instead of merely "not at the gate."
+If this area regresses, log the Examiner's raw poll responses (as done during this fix) before
+assuming it's LLM variance — check for a transient `awaiting:true` state with stale-looking fields
+sandwiched between the pending and final polls; that pattern means the race is back, not the model.
 
 ---
 
