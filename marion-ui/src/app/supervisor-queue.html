@@ -36,8 +36,8 @@
 
     @for (row of rows(); track row.threadId) {
       <div class="card shadow-sm border-warning mb-3">
-        <div class="card-header fw-semibold text-warning-emphasis bg-warning-subtle d-flex justify-content-between align-items-center">
-          <span>
+        <div class="card-header bg-warning-subtle d-flex justify-content-between align-items-center">
+          <span class="stamp stamp--amber">
             @if (row.referralForm) {
               Form {{ row.referralForm }}
             } @else {

@@ -5,10 +5,11 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { TransferService } from './transfer.service';
 import { HistoryEntry, TransferRequest, TransferResponse, SupervisorDecision } from './transfer.model';
 import { SupervisorQueue } from './supervisor-queue';
+import { MetricsPanel } from './metrics-panel';
 
 @Component({
   selector: 'app-root',
-  imports: [FormsModule, DecimalPipe, DatePipe, SupervisorQueue],
+  imports: [FormsModule, DecimalPipe, DatePipe, SupervisorQueue, MetricsPanel],
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
@@ -21,8 +22,9 @@ export class App implements OnDestroy {
   readonly transferTypes = ['PURCHASE', 'RELOCATION'];
 
   // Examiner tab drives the query form + local history; Supervisor Queue tab reads
-  // /pending-referrals directly, so it works from an independent browser session.
-  readonly view = signal<'examiner' | 'supervisor'>('examiner');
+  // /pending-referrals directly, so it works from an independent browser session; Metrics tab
+  // reads the backend's live Micrometer summary.
+  readonly view = signal<'examiner' | 'supervisor' | 'metrics'>('examiner');
 
   // plain properties — [(ngModel)] drives these
   question = '';
@@ -187,6 +189,28 @@ export class App implements OnDestroy {
     }
   }
 
+  // Resets the form and results panel back to the empty-state ("home") view. History is
+  // untouched — Recent Queries keeps every past entry regardless of Clear.
+  clear(): void {
+    this.stopPolling();
+    this.question = '';
+    this.vehicleVin = '';
+    this.originState = '';
+    this.county = '';
+    this.transferType = '';
+    this.response.set(null);
+    this.errorMessage.set(null);
+    this.errorCode.set(null);
+    this.showReasoning.set(false);
+    this.phase.set('');
+    this.streamingText.set('');
+    this.notes.set('');
+    this.pendingThreadId.set(null);
+    this.deciding.set(false);
+    this.supervisorNote.set('');
+    this.activeHistoryId.set(null);
+  }
+
   // Detects a resume that happened from a different session (e.g. the Supervisor Queue) while
   // this tab is still showing "Awaiting Supervisor Decision" — without this, the originating
   // tab has no signal that the run finished and is stuck showing a stale pending card forever.
@@ -223,6 +247,16 @@ export class App implements OnDestroy {
     if (id === null) return;
     const text = this.notes();
     this.history.update(h => h.map(e => e.id === id ? { ...e, notes: text } : e));
+  }
+
+  // Sources look like "statute-title-transfer-301-305.md §302" or "admin-rule-9-fee-schedule.md"
+  // — extracts just the filename so it can link to GET /api/corpus/{filename}. Some cited
+  // "sources" aren't corpus files at all (e.g. "database lookup results", "TAX_RECIPROCITY" —
+  // the model occasionally cites tool data this way), so this returns null for those and the
+  // template renders them as plain text instead of a dead link.
+  sourceFilename(source: string): string | null {
+    const match = source.match(/[\w-]+\.md/);
+    return match ? match[0] : null;
   }
 
   copyChecklist(items: string[]): void {

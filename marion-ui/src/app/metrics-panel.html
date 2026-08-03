@@ -1,0 +1,81 @@
+<div class="row">
+  <div class="col-lg-8 mx-auto">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 class="mb-0">Agent Node Metrics</h5>
+      <div class="d-flex align-items-center gap-2">
+        @if (lastRefreshed()) {
+          <small class="text-muted">Updated {{ lastRefreshed()!.toLocaleTimeString() }}</small>
+        }
+        <button
+          type="button"
+          class="btn btn-sm btn-outline-secondary"
+          [disabled]="loading()"
+          (click)="refresh()">
+          @if (loading()) {
+            <span class="spinner-border spinner-border-sm" role="status"></span>
+          } @else {
+            &#8635; Refresh
+          }
+        </button>
+      </div>
+    </div>
+
+    @if (errorMessage()) {
+      <div class="alert alert-danger">{{ errorMessage() }}</div>
+    }
+
+    @if (!metrics().length && !loading()) {
+      <div class="d-flex align-items-center justify-content-center text-muted py-5">
+        <div class="text-center">
+          <div class="display-6 mb-2">&#128202;</div>
+          <p>No metrics recorded yet — run a query first.</p>
+        </div>
+      </div>
+    }
+
+    @if (metrics().length) {
+      <div class="card shadow-sm">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Timer</th>
+                <th class="text-end">Count</th>
+                <th class="text-end">Mean (ms)</th>
+                <th class="text-end">Max (ms)</th>
+                <th class="text-end">Total (ms)</th>
+                <th style="width:120px">Share</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (m of metrics(); track m.label) {
+                <tr>
+                  <td class="font-monospace small">{{ m.label }}</td>
+                  <td class="text-end">{{ m.count }}</td>
+                  <td class="text-end">{{ m.meanMs | number:'1.1-1' }}</td>
+                  <td class="text-end">{{ m.maxMs | number:'1.1-1' }}</td>
+                  <td class="text-end">{{ m.totalMs | number:'1.0-0' }}</td>
+                  <td>
+                    <div class="bg-light rounded" style="height:8px">
+                      <div
+                        class="bg-primary rounded"
+                        style="height:8px"
+                        [style.width.%]="maxTotalMs > 0 ? (m.totalMs / maxTotalMs * 100) : 0">
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p class="text-muted small mt-2 mb-0">
+        "Share" is each timer's total accumulated time relative to the slowest timer here — the
+        longest bar is where the agent actually spends its time.
+      </p>
+    }
+
+  </div>
+</div>
