@@ -1,11 +1,34 @@
 <nav class="navbar navbar-dark bg-dark no-print">
-  <div class="container-xl">
-    <span class="navbar-brand fw-semibold">Marion DMV — Title Transfer Assistant</span>
-    <span class="navbar-text text-secondary small">Examiner Workstation</span>
+  <div class="container-xl d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <div>
+      <span class="navbar-brand fw-semibold">Marion DMV — Title Transfer Assistant</span>
+      <span class="navbar-text text-secondary small">Examiner Workstation</span>
+    </div>
+    <div class="btn-group" role="group" aria-label="View switcher">
+      <button
+        type="button"
+        class="btn btn-sm"
+        [class.btn-light]="view() === 'examiner'"
+        [class.btn-outline-light]="view() !== 'examiner'"
+        (click)="view.set('examiner')">
+        Examiner
+      </button>
+      <button
+        type="button"
+        class="btn btn-sm"
+        [class.btn-light]="view() === 'supervisor'"
+        [class.btn-outline-light]="view() !== 'supervisor'"
+        (click)="view.set('supervisor')">
+        Supervisor Queue
+      </button>
+    </div>
   </div>
 </nav>
 
 <div class="container-xl py-4">
+  @if (view() === 'supervisor') {
+    <app-supervisor-queue />
+  } @else {
   <div class="row g-4">
 
     <!-- ── Query Form ─────────────────────────────────────────────────────── -->
@@ -409,4 +432,5 @@
     </div>
 
   </div>
+  }
 </div>

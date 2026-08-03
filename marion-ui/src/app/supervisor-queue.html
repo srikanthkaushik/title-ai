@@ -1,0 +1,85 @@
+<div class="row">
+  <div class="col-lg-8 mx-auto">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 class="mb-0">Supervisor Queue</h5>
+      <div class="d-flex align-items-center gap-2">
+        @if (lastRefreshed()) {
+          <small class="text-muted">Updated {{ lastRefreshed()!.toLocaleTimeString() }}</small>
+        }
+        <button
+          type="button"
+          class="btn btn-sm btn-outline-secondary"
+          [disabled]="loading()"
+          (click)="refresh()">
+          @if (loading()) {
+            <span class="spinner-border spinner-border-sm" role="status"></span>
+          } @else {
+            &#8635; Refresh
+          }
+        </button>
+      </div>
+    </div>
+
+    @if (errorMessage()) {
+      <div class="alert alert-danger">{{ errorMessage() }}</div>
+    }
+
+    @if (!rows().length && !loading()) {
+      <div class="d-flex align-items-center justify-content-center text-muted py-5">
+        <div class="text-center">
+          <div class="display-6 mb-2">&#9989;</div>
+          <p>No referrals awaiting review.</p>
+        </div>
+      </div>
+    }
+
+    @for (row of rows(); track row.threadId) {
+      <div class="card shadow-sm border-warning mb-3">
+        <div class="card-header fw-semibold text-warning-emphasis bg-warning-subtle d-flex justify-content-between align-items-center">
+          <span>
+            @if (row.referralForm) {
+              Form {{ row.referralForm }}
+            } @else {
+              Referral
+            }
+          </span>
+          <small class="text-muted font-monospace">{{ row.threadId }}</small>
+        </div>
+        <div class="card-body">
+          <p class="mb-2"><strong>Scenario:</strong> {{ row.question }}</p>
+          @if (row.referralReason) {
+            <p class="mb-3"><strong>Reason:</strong> {{ row.referralReason }}</p>
+          }
+          <textarea
+            class="form-control mb-3"
+            rows="2"
+            placeholder="Supervisor note (optional)…"
+            [value]="row.note"
+            (input)="setNote(row.threadId, $any($event.target).value)">
+          </textarea>
+          <div class="d-flex gap-2">
+            <button
+              type="button"
+              class="btn btn-success"
+              [disabled]="decidingId() === row.threadId"
+              (click)="decide(row, 'APPROVED')">
+              @if (decidingId() === row.threadId) {
+                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+              }
+              Approve
+            </button>
+            <button
+              type="button"
+              class="btn btn-outline-danger"
+              [disabled]="decidingId() === row.threadId"
+              (click)="decide(row, 'DENIED')">
+              Deny
+            </button>
+          </div>
+        </div>
+      </div>
+    }
+
+  </div>
+</div>

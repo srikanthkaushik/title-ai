@@ -62,3 +62,12 @@ export interface SupervisorDecisionRequest {
   decision: SupervisorDecision;
   note?: string;
 }
+
+// One entry per thread currently paused at the await_supervisor checkpoint — the server-side
+// view of the HITL queue, independent of any single browser's local history.
+export interface PendingReferral {
+  threadId: string;
+  question: string;
+  referralReason: string | null;
+  referralForm: string | null;
+}

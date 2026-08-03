@@ -82,9 +82,21 @@ Each scenario covers a distinct code path. Use these against the Angular UI at
 | Transfer Type | `PURCHASE` |
 | County | `Marion County` |
 
-**Expected:** `supervisorReferral=true`, `referralForm="TR-10"`, `checklist=null`, `taxOwed=null`, `conditionalChecklist` non-empty
+**Expected:** `supervisorReferral=true`, `referralForm="TR-10"`, `checklist=null`, `taxOwed=null`,
+`conditionalChecklist` non-empty, and **`referralReason` describes the lien** (names "Midwest Auto
+Finance" or "lien") — it must **not** mention any brand word (Rebuilt/Reconstructed/Salvage/etc.)
+or the Brand Equivalency Guide.
 
 **Exercises:** STEP 1 lien trigger from MCP VEHICLE_RECORD (`"lien_status":"ACTIVE"`).
+
+**Regression note:** this scenario previously (before the STEP 1 prompt fix — see PROJECT.md
+"Fixed — referralReason copying the prompt's own brand-equivalency example verbatim") produced
+`referralReason="Halloway Rebuilt → Marion brand: Reconstructed"` — a lien-only case with no brand
+anywhere in the question, verbatim-copying the SYSTEM_PROMPT's own brand example because the old
+prompt told the model to look up a brand equivalent on *every* referral, not just trigger (b).
+Caught via the Supervisor Queue UI panel showing the wrong reason for an obviously lien-driven case.
+If this regresses, check whether the trigger-specific branching in STEP 1's referralReason guidance
+got flattened back into an unconditional instruction.
 
 ---
 
@@ -288,8 +300,9 @@ Stop the MCP server (`Ctrl-C` on its terminal) then submit any scenario with a V
 
 ## Group G — Human-in-the-Loop Supervisor Review
 
-Exercises the LangGraph4j checkpoint pause/resume on `/api/transfer/query/agent` and
-`/api/transfer/query/agent/resume`. Only the agent endpoint has a checkpointer —
+Exercises the LangGraph4j checkpoint pause/resume on `/api/transfer/query/agent`,
+`/api/transfer/query/agent/resume`, and the server-side audit endpoint
+`/api/transfer/pending-referrals`. Only the agent endpoint has a checkpointer —
 `/api/transfer/query` and `/api/transfer/stream` never pause, since they don't run the graph.
 
 ### G1 — Approve feeds the decision back to the model and produces a resolved transfer
@@ -377,6 +390,67 @@ Re-run A1 (or any Group A/C scenario) through `/query/agent`. **Expected:**
 `awaitingSupervisorDecision=false` on the very first response, no `await_supervisor` step visible in
 `marion.agent.node` metrics (only `retrieve`, `tool-fetch`, `generate` accrue time) — confirms the
 conditional edge only routes to the gate node when `supervisorReferral=true`, never on the happy path.
+
+---
+
+### G5 — `/pending-referrals` audits paused runs server-side, independent of the client
+
+```bash
+curl -s http://localhost:8080/api/transfer/pending-referrals   # before submitting anything
+
+curl -s -X POST http://localhost:8080/api/transfer/query/agent \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Customer wants to title a vehicle relocating from Crestwood. The title shows an active lien with First National Bank.","originState":"Crestwood","county":"Marion","transferType":"RELOCATION"}'
+
+curl -s http://localhost:8080/api/transfer/pending-referrals   # after submitting, before resuming
+
+# resume with the returned threadId (APPROVED or DENIED), then re-check:
+curl -s http://localhost:8080/api/transfer/pending-referrals   # after resuming
+```
+
+**Expected (verified live):**
+- Before submitting: `[]`.
+- After submitting: one entry — `{threadId, question, referralReason, referralForm}` — with
+  `referralReason` matching the paused response's own `referralReason` (here: the active-lien trigger).
+- After resuming (either decision): back to `[]` — the endpoint filters by
+  `graph.getState(config).next() == "await_supervisor"`, not by presence in the checkpoint map, so a
+  resumed-to-`END` thread drops out immediately without any explicit `release()` call.
+- The checkpoint itself is **not** released — `MemorySaver` keeps every thread it has ever seen for
+  the life of the process (see PROJECT.md's unbounded-checkpoint-map limitation). This scenario only
+  checks the *reported* pending set, not memory growth.
+
+---
+
+### G6 — Supervisor Queue panel: two-role demo across independent browser sessions
+
+Manual, through the UI (`npm start` in `marion-ui`, `http://localhost:4200`). Use two browser
+profiles/windows with no shared storage — e.g. a normal window and an Incognito/InPrivate window —
+to stand in for two different people:
+
+1. **Window A ("Examiner"):** default Examiner view. Submit:
+   Scenario `Customer wants to title a vehicle relocating from Crestwood. The title shows an active
+   lien with First National Bank.`, Origin State `Crestwood`, Transfer Type `RELOCATION`, County
+   `Marion County`. Confirm the red referral banner and amber "Awaiting Supervisor Decision" card
+   appear in this window.
+2. **Window B ("Supervisor"):** open `http://localhost:4200` fresh, click the **Supervisor Queue**
+   tab in the navbar. Within ~4s (poll interval) the card from step 1 appears — question, referral
+   reason, form, and a note field — with no action taken in window B to "find" it.
+3. In window B, add a note and click **Approve**. The card disappears from window B's queue.
+4. Back in window A: nothing updates automatically (Window A never polls `/pending-referrals`, only
+   its own history) — this is expected. Refresh window A's page or re-select the history entry via
+   `selectHistory` is not wired to re-fetch server state, so window A's copy of the response stays
+   stale until a new `/query/agent` or `/query/agent/resume` call is made from *that* session. Confirm
+   this by hitting `http://localhost:8080/api/transfer/pending-referrals` directly (or from window
+   B's queue, which shows "No referrals awaiting review.") — the resolution genuinely happened
+   server-side even though window A's local state hasn't refreshed to show it.
+
+**Expected:** the referral is creatable in one session and fully resolvable from a completely
+independent session that was never told the `threadId` — this is the actual point of the panel: a
+supervisor doesn't need to be the same person/browser/tab as the examiner who hit the exception.
+Automated equivalent (two independent Playwright `BrowserContext`s, no shared cookies/storage) has
+been run and passes: session A pauses, session B discovers and approves without ever receiving the
+`threadId` from A directly (only by reading it back off A's own `/query/agent` response for
+assertion purposes — B's own flow only ever uses `/pending-referrals`).
 
 ---
 

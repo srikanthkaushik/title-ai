@@ -9,9 +9,9 @@ graph TD
     subgraph marion-app ["marion-app — Spring WebFlux :8080"]
         PII["PiiGuardrailFilter\n@Order(-100)\nblocks SSN / card patterns"]
         TC["TransferController\nPOST /api/transfer/query"]
-        TAC["TransferAgentController\nPOST /api/transfer/query/agent\nPOST /api/transfer/query/agent/resume"]
+        TAC["TransferAgentController\nPOST /api/transfer/query/agent\nPOST /api/transfer/query/agent/resume\nGET /api/transfer/pending-referrals"]
         Graph["LangGraph4j Agent\nRETRIEVE → TOOL_FETCH → GENERATE → await_supervisor"]
-        Checkpoint[("MemorySaver\nin-process checkpoint\nkeyed by threadId")]
+        Checkpoint[("ThreadTrackingMemorySaver\nin-process checkpoint\nkeyed by threadId")]
         Retrieval["RetrievalService\nhybrid vector + FTS + LLM rerank"]
         MCP_Client["McpToolService\nlazy DefaultMcpClient"]
         Parser["TransferResponseParser\nJackson 3, strips // and /* */ comments"]
@@ -59,10 +59,10 @@ graph TD
 |---|---|
 | `PiiGuardrailFilter` | WebFlux `WebFilter` at `@Order(-100)`; regex-blocks SSN and card patterns on `/api/transfer/**`; returns 400 before the request reaches any controller |
 | `TransferController` | Single-shot endpoint; retrieval + MCP tools + LLM in one blocking `Mono.fromCallable`; retries once on parse failure with specific Jackson error in prompt |
-| `TransferAgentController` | Delegates to the compiled LangGraph4j graph; issues a fresh `threadId` per `/query/agent` call; returns `AgentTransferResponse` (wraps `TransferResponse` + `awaitingSupervisorDecision` + `threadId`); `/query/agent/resume` re-enters a paused checkpoint by `threadId` |
+| `TransferAgentController` | Delegates to the compiled LangGraph4j graph; issues a fresh `threadId` per `/query/agent` call; returns `AgentTransferResponse` (wraps `TransferResponse` + `awaitingSupervisorDecision` + `threadId`); `/query/agent/resume` re-enters a paused checkpoint by `threadId`; `/pending-referrals` audits every thread currently parked at the gate |
 | `TransferAgentGraph` | Defines RETRIEVE → TOOL_FETCH → GENERATE → `await_supervisor` graph with a conditional retry edge and a conditional referral-pause edge; each node timed via `marion.agent.node` Micrometer metric |
 | `await_supervisor` node | No-op gate node; its only purpose is a named `interruptBefore()` target. The graph halts here — after GENERATE's output is committed, before this node's body runs — whenever `supervisorReferral=true` |
-| `MemorySaver` | LangGraph4j in-process `BaseCheckpointSaver`; persists graph state keyed by `threadId` so a paused run can be resumed later in the same process. **Not durable across app restarts** — a real deployment needs a Postgres-backed saver (not shipped by LangGraph4j) |
+| `ThreadTrackingMemorySaver` | LangGraph4j in-process `BaseCheckpointSaver` (subclasses `MemorySaver` to expose its otherwise-`protected` thread cache via `threadIds()`); persists graph state keyed by `threadId` so a paused run can be resumed later in the same process, and lets `/pending-referrals` enumerate every thread it has ever seen. **Not durable across app restarts** — a real deployment needs a Postgres-backed saver (not shipped by LangGraph4j) |
 | `RetrievalService` | Hybrid retrieval: vector cosine + Postgres FTS; retrieves 3× target, reranks with LLM cross-encoder (reason-before-verdict, `SCORE:` pattern), returns top-N |
 | `McpToolService` | Lazy `DefaultMcpClient` with double-checked locking; degrades gracefully if MCP server is unreachable |
 | `TransferResponseParser` | Strips `//` and `/* */` comments from raw LLM output, extracts first `{…}` block, deserializes with Jackson 3 `FAIL_ON_UNKNOWN_PROPERTIES=false` |
@@ -86,7 +86,8 @@ graph LR
 |---|---|---|---|
 | `POST` | `/api/transfer/query` | `TransferController` | `TransferResponse` (JSON, 200) |
 | `POST` | `/api/transfer/query/agent` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — `{response, awaitingSupervisorDecision, threadId}` |
-| `POST` | `/api/transfer/query/agent/resume` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — resumes a paused `threadId` with `{decision, note}`; does not re-invoke the LLM |
+| `POST` | `/api/transfer/query/agent/resume` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — resumes a paused `threadId` with `{decision, note}`; triggers one more GENERATE pass |
+| `GET` | `/api/transfer/pending-referrals` | `TransferAgentController` | `List<PendingReferral>` (JSON, 200) — `{threadId, question, referralReason, referralForm}` for every thread currently paused at `await_supervisor` |
 | `POST` | `/api/transfer/stream` | `TransferController` | SSE phase/token/result events (non-agent path; no checkpointing, so no HITL pause) |
 | `POST` | `/api/ingest/reset?confirm=true` | `IngestController` | wipes + reseeds corpus |
 | `GET` | `/actuator/health` | Spring Boot Actuator | health status |
@@ -174,7 +175,7 @@ sequenceDiagram
     participant U as Examiner (UI)
     participant TAC as TransferAgentController
     participant G as CompiledGraph
-    participant CP as MemorySaver (checkpoint)
+    participant CP as ThreadTrackingMemorySaver (checkpoint)
     participant Sup as Supervisor (UI)
     participant LLM as chatModel
 
@@ -222,15 +223,30 @@ sequenceDiagram
   appended *after* the original STEP 1 trigger banners in the prompt and explicitly says it supersedes them
   — otherwise a weaker model can re-trigger STEP 1 from the earlier banner instead of honoring the decision.
 - **`threadId` is the resume key.** It's generated per `/query/agent` call, returned to the client in
-  `AgentTransferResponse`, and must be echoed back verbatim on `/query/agent/resume`. There is no
-  server-side list of pending referrals in this prototype — the client (UI history entry) is the only
-  place `threadId` is retained.
-- **`MemorySaver` is in-process memory, not a durable store.** A paused referral is lost if `marion-app`
-  restarts before a supervisor decides. Acceptable for a prototype; a production deployment needs a
-  Postgres-backed `BaseCheckpointSaver` (LangGraph4j ships the interface, not an implementation).
+  `AgentTransferResponse`, and must be echoed back verbatim on `/query/agent/resume`.
+- **`GET /pending-referrals` audits paused runs server-side.** `MemorySaver.cache()` is `protected`, so
+  `ThreadTrackingMemorySaver` subclasses it just to expose `threadIds()`. The endpoint loops those ids,
+  calls `getState(config).next()` per thread (the same pause-detection check `toAgentResponse` uses), and
+  keeps only the ones still parked at `await_supervisor` — a resumed-to-`END` thread drops out of the list
+  automatically without ever calling `graph.release()`.
+- **`ThreadTrackingMemorySaver` is in-process memory, not a durable store.** A paused referral is lost if
+  `marion-app` restarts before a supervisor decides, and the checkpoint map is unbounded — nothing ever
+  calls `release()`, so resolved threads accumulate for the life of the process. Acceptable for a
+  prototype; a production deployment needs a Postgres-backed `BaseCheckpointSaver` (LangGraph4j ships the
+  interface, not an implementation) with real eviction.
 - **The non-agent path (`/api/transfer/stream`, `TransferController`) has no checkpointer and cannot pause.**
   HITL only exists on the LangGraph4j-backed `/query/agent` path — this is why the UI's `submit()` uses that
   endpoint rather than the SSE streaming one.
+- **The Angular UI has two independent views, not one.** `app.ts`'s `view` signal toggles between the
+  Examiner form (drives `/query/agent`, keeps local `history`) and a standalone `SupervisorQueue` component
+  (`supervisor-queue.ts`/`.html`) that polls `GET /pending-referrals` every 4s and calls `/query/agent/resume`
+  directly. The queue component holds no reference to the examiner's `pendingThreadId` or `history` — it is
+  a second, independent consumer of the same server-side state, which is what makes a genuine two-role demo
+  possible: open the Examiner view in one browser session and the Supervisor Queue in a completely separate
+  one (different browser, different profile, incognito — anything with no shared `localStorage`/signals) and
+  the referral still shows up and can be resolved cross-session. Verified with two independent Playwright
+  `BrowserContext`s: session A submits and pauses, session B (never told the `threadId` by session A) sees
+  the card via polling, approves it, and session A's server state reflects the resolution.
 
 ---
 

@@ -186,13 +186,50 @@ Initial version resumed straight to END without the LLM ever seeing the decision
   one extra LLM call, not zero and not a retry storm. Deny produces a blocked response with the
   supervisor's note folded into `conditionalNote`.
 - **Known limitations (prototype scope, not bugs):**
-  - No "list pending referrals" endpoint — the client (UI history entry) is the only place a
-    paused `threadId` is retained; there's no server-side way to discover or audit paused runs.
   - Resuming a `threadId` MemorySaver has never seen (unknown, or lost to an app restart) fails
     as a generic 500 `AGENT_ERROR` / "Missing Checkpoint!" — not a distinct 404/409.
   - The published design-deck artifact ("A Flag Is Not a Control") still says resume "adds zero
     re-inference cost" — accurate when written, **no longer accurate** now that resume triggers a
     second GENERATE pass. Not updated yet; flagged to the user, their call whether to revise it.
+
+- **Follow-up — `GET /api/transfer/pending-referrals` (server-side audit of paused runs):**
+  - Closes the "no list pending referrals" gap: previously the client's history entry was the only
+    place a paused `threadId` was retained, so a paused run was undiscoverable from the server.
+  - `ThreadTrackingMemorySaver extends MemorySaver` — `MemorySaver.cache()` is `protected`, not
+    public, so there's no supported way to enumerate every threadId it holds. Subclassing works:
+    protected members are visible to a subclass even in a different package (just not through a
+    superclass-typed reference), so `ThreadTrackingMemorySaver.threadIds()` calls `cache().keySet()`.
+  - Registered as its own `@Bean` (`checkpointSaver()`), injected into both `CompiledGraph`'s
+    `checkpointSaver()` and `TransferAgentController`, so the same instance backs the graph and the
+    audit endpoint.
+  - Endpoint loops `threadIds()`, builds a `RunnableConfig` per id, and calls `graph.getState(config)`
+    — same `next() == "await_supervisor"` check `toAgentResponse` already used — keeping only threads
+    still paused. Each survivor's `draftAnswer` is parsed for `referralReason`/`referralForm` (parse is
+    expected to always succeed here, since routing only reaches `await_supervisor` after a clean parse).
+  - **Verified live**: submitted a lien-referral scenario, confirmed it appeared in
+    `/pending-referrals` with the correct `referralReason`, then resumed it with `APPROVED` and
+    confirmed it dropped out of the list — no `graph.release()` call needed, since the filter is by
+    current graph position, not by presence in the checkpoint map.
+  - **New known limitation surfaced by this**: since nothing ever calls `graph.release()`, the
+    checkpoint map is unbounded — every thread ever created (paused or long since resolved) stays in
+    memory for the life of the process. Fine for a prototype; a real deployment needs either explicit
+    release on terminal state or a durable saver with TTL/eviction.
+
+- **Follow-up — Supervisor Queue UI panel (completes the HITL demo)**:
+  - New standalone `SupervisorQueue` component (`marion-ui/src/app/supervisor-queue.ts`/`.html`),
+    added as a second view in `App` toggled by a `view` signal (`'examiner' | 'supervisor'`) — a
+    button pair in the navbar, no router needed for two views.
+  - Polls `GET /pending-referrals` every 4s (`ngOnInit`/`ngOnDestroy` interval), renders one card per
+    pending referral (question, referralReason, referralForm, threadId), and resumes directly via the
+    existing `/query/agent/resume` — it does not touch the Examiner view's `pendingThreadId` or
+    `history` signals at all.
+  - This is the point of the panel: the Examiner view and Supervisor Queue view share no client-side
+    state, only the server. **Verified with two independent Playwright `BrowserContext`s** (separate
+    cookies/storage, i.e. two different "users"): context A submits a lien-referral scenario and
+    pauses; context B — which was never given A's `threadId` — opens the Supervisor Queue tab, the
+    card appears via polling, gets approved from context B; context A's server state (queried
+    directly) confirms the resolution. This is the first time the HITL loop has been demonstrated as
+    a genuine two-role handoff rather than one browser session talking to itself.
 
 ## Key gotchas
 
@@ -238,9 +275,30 @@ POST /api/transfer/query/agent
 - `check_inspection_stations(county, inspectionType)` — available stations
 
 ## Known quality issues (not system bugs)
-- Agent referral reason sometimes misidentifies trigger (e.g., says "branded title" when actual trigger is "active lien") — LLM grounding issue; tool data is present but model reasoning drifts
 - Retrieval: `procedure-ch4-4-elt-conversion.md` doesn't surface in top-5 for Verdana ELT query; `admin-rule-2-1-transfer-procedures.md` covers the content (eval assertion widened)
 
+## Fixed — `referralReason` copying the prompt's own brand-equivalency example verbatim
+- **Root cause found via the Supervisor Queue UI**: user spotted a lien-only referral (Crestwood,
+  active lien, no brand mentioned anywhere) whose `referralReason` read "Halloway Rebuilt → Marion
+  brand: Reconstructed" — the exact example string from `SYSTEM_PROMPT`'s STEP 1, and also the
+  flagship "most common source of confusion" row from `brand-equivalency-guide.md` in the corpus
+  (retrieved into context for nearly any transfer question, brand-relevant or not).
+- STEP 1's old instruction — "identify the Marion brand equivalent ... and include it in
+  referralReason" — fired **unconditionally** on every referral, regardless of which of the three
+  triggers ((a) lien, (b) brand, (c) unrecognized state) actually caused it. With no real brand in
+  the question, qwen2.5:7b filled the slot by parroting the guide's own example row.
+- Fixed by making the `referralReason` instruction branch explicitly per trigger, with the brand
+  equivalency lookup scoped to trigger (b) only, and an explicit "never copy an example verbatim"
+  guard (`TransferAgentGraph.java` SYSTEM_PROMPT, STEP 1).
+- **Verified live** after restarting `marion-app` (fresh PID, confirmed via `MarionDmvApplication`
+  in the process command line — see the dual-`java.exe` gotcha below): re-ran the same lien scenario
+  3× — `referralReason` now correctly names the lien holder each time, never brand text. Re-ran the
+  brand-trigger scenario (Halloway/Rebuilt) — still correctly reports the brand equivalency, since
+  that's the one case it's supposed to. Re-ran an unrecognized-origin-state scenario (Westbrook) —
+  correctly names the state, not a brand or lien.
+
 ## Next steps (not started)
+- Distinct 404/409 for resuming an unknown/expired `threadId`, instead of the current generic 500
 - Consider: structured output parsing with retry vs current regex guard
-- Untracked in working tree, not yet committed or triaged: `kickoff.md`, `new-project-instructions.md`, `devdocs-ai-skilljar-alignment.md`, `title.pdf`, scratch logs (`eval-baseline.log`, `eval-run2.log`, `mcp-server*.log`)
+- Untracked in working tree, not yet committed or triaged: `title.pdf`, scratch logs
+  (`eval-baseline.log`, `eval-run2.log`, `mcp-server*.log`)

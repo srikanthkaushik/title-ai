@@ -14,7 +14,6 @@ import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphDefinition;
 import org.bsc.langgraph4j.GraphStateException;
 import org.bsc.langgraph4j.StateGraph;
-import org.bsc.langgraph4j.checkpoint.MemorySaver;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -71,8 +70,18 @@ public class TransferAgentGraph {
               "title from the state of Westbrook" → supervisorReferral = true (unrecognized state)
             If any trigger is found, set supervisorReferral=true, referralForm="TR-10",
             checklist=null, taxOwed=null, and populate conditionalChecklist. Stop normal processing.
-            Before stopping: also identify the Marion brand equivalent from the Brand Equivalency Guide
-            and include it in referralReason (e.g., "Halloway Rebuilt → Marion brand: Reconstructed").
+            Before stopping: set referralReason to describe the SPECIFIC trigger(s) actually present
+            in THIS question. Never copy a guide's example text verbatim, and never mention a brand
+            equivalent unless trigger (b) is one of the reasons this case triggered:
+              - Trigger (a) fired: name the lien holder/status from the question (e.g., "Active lien
+                held by First National Bank — must be released before transfer").
+              - Trigger (b) fired: this is the ONLY case where you consult the Brand Equivalency Guide
+                and state the specific Marion brand equivalent for the origin state and brand actually
+                named in the question (e.g., "Halloway 'Rebuilt' → Marion brand: Reconstructed" — but
+                only if Halloway/Rebuilt is what THIS question actually says).
+              - Trigger (c) fired: name the unrecognized origin state (e.g., "Origin state 'Westbrook'
+                is not one of Marion's four recognized states").
+              If more than one trigger fired, describe each one that applies.
             SCANNING CAUTION: An `odometer` or `gvwr_lbs` field in VEHICLE_RECORD is a data field
             (mileage or weight) — it is NOT a brand trigger. Only a `brand` field explicitly containing
             a brand name (Odometer, Rebuilt, etc.) triggers this step. Expired insurance is not a trigger.
@@ -162,11 +171,17 @@ public class TransferAgentGraph {
             """;
 
     @Bean
+    public ThreadTrackingMemorySaver checkpointSaver() {
+        return new ThreadTrackingMemorySaver();
+    }
+
+    @Bean
     public CompiledGraph<TransferAgentState> compiledTransferGraph(
             RetrievalService retrievalService,
             McpToolService mcpToolService,
             ChatModel chatModel,
-            MeterRegistry meterRegistry) throws GraphStateException {
+            MeterRegistry meterRegistry,
+            ThreadTrackingMemorySaver checkpointSaver) throws GraphStateException {
 
         Timer retrieveTimer  = Timer.builder("marion.agent.node").tag("node", "retrieve").register(meterRegistry);
         Timer toolFetchTimer = Timer.builder("marion.agent.node").tag("node", "tool-fetch").register(meterRegistry);
@@ -244,7 +259,7 @@ public class TransferAgentGraph {
                 // generate cycles + end.
                 .compile(CompileConfig.builder()
                         .recursionLimit(14)
-                        .checkpointSaver(new MemorySaver())
+                        .checkpointSaver(checkpointSaver)
                         .interruptBefore("await_supervisor")
                         .build());
 

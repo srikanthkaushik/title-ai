@@ -4,10 +4,11 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { TransferService } from './transfer.service';
 import { HistoryEntry, TransferRequest, TransferResponse, SupervisorDecision } from './transfer.model';
+import { SupervisorQueue } from './supervisor-queue';
 
 @Component({
   selector: 'app-root',
-  imports: [FormsModule, DecimalPipe, DatePipe],
+  imports: [FormsModule, DecimalPipe, DatePipe, SupervisorQueue],
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
@@ -18,6 +19,10 @@ export class App {
     'Jefferson County', 'Franklin County'
   ];
   readonly transferTypes = ['PURCHASE', 'RELOCATION'];
+
+  // Examiner tab drives the query form + local history; Supervisor Queue tab reads
+  // /pending-referrals directly, so it works from an independent browser session.
+  readonly view = signal<'examiner' | 'supervisor'>('examiner');
 
   // plain properties — [(ngModel)] drives these
   question = '';

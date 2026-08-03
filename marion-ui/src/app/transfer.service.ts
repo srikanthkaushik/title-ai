@@ -1,13 +1,14 @@
 import { inject, Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { TransferRequest, StreamEvent, AgentTransferResponse, SupervisorDecisionRequest } from './transfer.model';
+import { TransferRequest, StreamEvent, AgentTransferResponse, SupervisorDecisionRequest, PendingReferral } from './transfer.model';
 
 @Injectable({ providedIn: 'root' })
 export class TransferService {
   private readonly http = inject(HttpClient);
   private readonly url = '/api/transfer/query/agent';
   private readonly resumeUrl = '/api/transfer/query/agent/resume';
+  private readonly pendingReferralsUrl = '/api/transfer/pending-referrals';
   private readonly streamUrl = '/api/transfer/stream';
 
   query(request: TransferRequest): Observable<AgentTransferResponse> {
@@ -16,6 +17,10 @@ export class TransferService {
 
   resume(request: SupervisorDecisionRequest): Observable<AgentTransferResponse> {
     return this.http.post<AgentTransferResponse>(this.resumeUrl, request);
+  }
+
+  pendingReferrals(): Observable<PendingReferral[]> {
+    return this.http.get<PendingReferral[]>(this.pendingReferralsUrl);
   }
 
   stream(request: TransferRequest): Observable<StreamEvent> {
