@@ -275,6 +275,35 @@ curl -X POST http://localhost:8080/api/transfer/query/agent \
 
 ---
 
+### E3 — Verdana ELT retrieval (partially-improved, still-open gap)
+
+| Field | Value |
+|---|---|
+| Scenario | `A customer's vehicle is titled in Verdana (ELT state) with no lien. Walk me through the Marion title process.` |
+
+**Expected:** `procedure-ch4-4-elt-conversion.md` **or** `admin-rule-2-1-transfer-procedures.md`
+appears in the top-5 retrieved results — matches `RetrievalEvalTest`'s A2 assertion, which is
+still permissive. `procedure-ch4-4-elt-conversion.md` specifically is *not* expected to appear
+reliably; see the note below for why, before treating that as a regression.
+
+**Investigation note (two layers, only the first fixed):** this document's "Verdana is an ELT
+state" sentence used to sit in a different chunk than its ELT acronym expansion (separated by a
+blank-line paragraph break, right where `DocumentSplitters.recursive(500, 50)` in
+`RagConfig.java` splits) — its chunk never repeated "Electronic Lien and Title" alongside
+"Verdana." That part was fixed by rewording the intro paragraph to repeat the expansion in the
+same sentence, which measurably improved the chunk's rank (into the candidate pool at all).
+But the document still doesn't clear top-5: captured the LLM reranker's own reasoning directly,
+and it scores the (now-improved) intro chunk only 2/10 because none of ch4-4's 17 chunks, on
+their own, actually "walk through the process" the way this query asks — the useful checklist
+content (Form TR-1/TR-2, required documents) lives in *other* chunks that rank too low
+(~position 34-79 of 471) to even enter the 15-candidate rerank pool. Full write-up and
+next-step options in PROJECT.md's "Known quality issues" section. If debugging this further,
+don't assume a single-paragraph content edit will be enough on its own — the deeper issue is
+that independent per-chunk reranking structurally disadvantages a document whose relevant
+content is spread across many small chunks.
+
+---
+
 ## Group F — Parse / Error Paths
 
 ### F1 — Normal request (verify 200 + JSON body)

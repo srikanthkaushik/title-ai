@@ -23,7 +23,9 @@
 - `TransferController` updated: all blocking work on `boundedElastic`, tool data injected as authoritative section in prompt
 
 ### Milestone 3 — Eval Baseline
-- `RetrievalEvalTest`: 5/5 PASS (A2 assertion widened to accept `admin-rule-2-1-transfer-procedures.md`)
+- `RetrievalEvalTest`: 5/5 PASS (A2 widened to accept `admin-rule-2-1-transfer-procedures.md` as a
+  substitute for `procedure-ch4-4-elt-conversion.md`; later investigated in depth — partially
+  improved, not fully closed, see "Known quality issues" below)
 - `TransferEvalTest`: 3/3 PASS (A4 reciprocity, F1 exception escalation, B1 Halloway distractor)
 - Fix: `parseJson()` strips `//` comments before Jackson parse (qwen2.5:7b quirk)
 
@@ -330,7 +332,49 @@ POST /api/transfer/query/agent
 - `check_inspection_stations(county, inspectionType)` — available stations
 
 ## Known quality issues (not system bugs)
-- Retrieval: `procedure-ch4-4-elt-conversion.md` doesn't surface in top-5 for Verdana ELT query; `admin-rule-2-1-transfer-procedures.md` covers the content (eval assertion widened)
+- Retrieval: `procedure-ch4-4-elt-conversion.md` doesn't surface in top-5 for the Verdana ELT
+  query. **Root-caused, partially improved, not fully closed** — see write-up below.
+
+### Investigated — `procedure-ch4-4-elt-conversion.md` missing from top-5 retrieval (Verdana ELT query)
+
+Attempted a real fix rather than leaving the eval assertion widened. Made real, verified progress,
+but the gap wasn't fully closable with a single-document content edit — writing this up in full so
+the next attempt doesn't have to re-derive it.
+
+- **Layer 1 root cause (fixed)**: both `procedure-ch4-4-elt-conversion.md` and
+  `admin-rule-2-1-transfer-procedures.md` mention "Verdana" exactly once. In admin-rule-2.1 §2.1.3,
+  the section heading ("ELT (ELECTRONIC LIEN AND TITLE) TRANSFERS"), the acronym expansion, and
+  "Verdana is an ELT state" all sit in one short paragraph — a single chunk under `RagConfig`'s
+  `DocumentSplitters.recursive(500, 50)`. In ch4-4, the acronym expansion (in the `SCENARIO:` block)
+  was separated by a blank line from the paragraph that actually says "Verdana is an ELT state" —
+  exactly where the recursive splitter breaks paragraphs apart — so the chunk containing "Verdana"
+  never repeated the acronym expansion alongside it. **Fixed** by rewording ch4-4's intro paragraph
+  so "Verdana is an ELT (Electronic Lien and Title) state" repeats the expansion in the same
+  sentence. **Verified**: the stored chunk now contains both terms together, and the chunk's rank
+  among all 471 corpus chunks improved to #6 by cosine similarity (previously ranked low enough to
+  not reliably enter the 15-candidate rerank pool at all).
+- **Layer 2 root cause (not fixed)**: even with Layer 1 fixed, `procedure-ch4-4-elt-conversion.md`
+  still doesn't clear top-5. Diagnosed by capturing the LLM reranker's own reasoning directly: it
+  scored the now-improved intro chunk **2/10** — "provides context about Verdana being an ELT state
+  but does not walk through the specific Marion title process." The query asks to "walk...through
+  the process," but all 17 of ch4-4's chunks are individually either background/definitional prose
+  or a single checklist-item fragment (e.g. "☐ 3. MARION FORM TR-1...") — none of them, alone,
+  actually satisfy that framing. The document's actual most-useful content (the required-documents
+  checklist, §4.4.3) ranks ~position 34-79 of 471 chunks by cosine similarity, well outside the
+  top-15 candidate pool (`rag.retrieve-multiplier=3`), so the reranker never even sees it to judge
+  it. Meanwhile admin-rule-2-1's single self-contained paragraph — while also only scoring 3/10 by
+  the same reranker — edges ch4-4 out because it's not competing against 17 fragments of its own
+  content splitting the signal.
+- **Next-step options, not yet attempted** (discussed with user, deferred for now):
+  1. Bump `rag.retrieve-multiplier` (currently 3) so the candidate pool grows enough to include
+     ch4-4's actual checklist chunks — global, config-only, but more LLM reranker calls per query.
+  2. Iteratively rewrite the intro paragraph with more explicit "process/steps" framing language to
+     raise its reranker score directly — stays single-document, but uncertain how many rounds.
+  3. Accept this as a structural limitation of chunk-level independent reranking against
+     multi-chunk documents, and leave `RetrievalEvalTest`'s A2 permissive (current state).
+- `RetrievalEvalTest`'s A2 stays as an either/or assertion (`procedure-ch4-4-elt-conversion.md` OR
+  `admin-rule-2-1-transfer-procedures.md`), now with the full diagnosis in a comment instead of a
+  one-line "baseline note" — verified both docs still reliably satisfy it after the content edit.
 
 ## Fixed — `referralReason` copying the prompt's own brand-equivalency example verbatim
 - **Root cause found via the Supervisor Queue UI**: user spotted a lien-only referral (Crestwood,

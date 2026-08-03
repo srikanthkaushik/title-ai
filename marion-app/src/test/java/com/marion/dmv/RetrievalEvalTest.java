@@ -37,11 +37,19 @@ class RetrievalEvalTest {
     }
 
     // A2 — Verdana ELT, no lien, happy path
-    // Baseline note: procedure-ch4-4-elt-conversion.md does not surface in top-5;
-    // admin-rule-2-1-transfer-procedures.md (score 0.913) covers ELT content instead.
-    // Both are valid; assertion accepts either.
+    // Root-caused (not just papered over): procedure-ch4-4-elt-conversion.md's 17 chunks are each
+    // either background/definitional prose or a single checklist-item fragment — none of them,
+    // alone, actually "walk through the process" this query asks for. Confirmed by inspecting the
+    // LLM reranker's own reasoning: it scores the best-ranking chunk (the intro paragraph) 2/10 for
+    // exactly that reason, and the document's actual checklist content (Form TR-1/TR-2 etc.) ranks
+    // ~position 34-79 of 471 chunks by cosine similarity — outside the top-15 candidate pool
+    // (rag.retrieve-multiplier=3), so the reranker never even sees it. A content edit co-locating
+    // "Verdana" with the ELT acronym expansion in the intro paragraph measurably improved that
+    // chunk's candidacy (it now enters the pool at all), but didn't close the gap on its own.
+    // admin-rule-2-1-transfer-procedures.md's single self-contained §2.1.3 paragraph still edges it
+    // out. See PROJECT.md "Known quality issues" for the full write-up and next-step options.
     @Test
-    void a2_verdanaEltNoLien_shouldRetrieveEltConversionAndVerdanaProfile() {
+    void a2_verdanaEltNoLien_shouldRetrieveEltConversionOrAdminRule() {
         List<RetrievalResult> results = retrievalService.retrieveAndRerank(
                 "A customer's vehicle is titled in Verdana (ELT state) with no lien. "
                 + "Walk me through the Marion title process."

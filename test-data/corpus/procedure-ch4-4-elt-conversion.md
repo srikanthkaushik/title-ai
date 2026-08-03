@@ -14,8 +14,9 @@ SCENARIO:   Transfer Type: PURCHASE or RELOCATION
             Brand: CLEAN (any brand triggers supervisor referral — see Chapter 5)
 
 This section applies when the vehicle's origin state participates in an electronic title
-system and has never issued a paper title for the vehicle. Verdana is an ELT state.
-See Admin. Rule 4 for the complete list of ELT and mixed-system states.
+system — ELT (Electronic Lien and Title) — and has never issued a paper title for the
+vehicle. Verdana is an ELT (Electronic Lien and Title) state. See Admin. Rule 4 for the
+complete list of ELT and mixed-system states.
 
 ─────────────────────────────────────────────────────────────────────────────────────────────
 
