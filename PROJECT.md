@@ -390,15 +390,28 @@ the next attempt doesn't have to re-derive it.
   hallucinating rates) never fired unless the examiner *also* clicked the dropdown.
 - Fixed client-side only (`marion-ui/src/app/app.ts`/`app.html`) — `detectOriginState()` scans
   the Scenario textarea's live text (word-boundary, case-insensitive) against the four known
-  origin states on every `input` event, and auto-selects the dropdown, but only while it's still
-  unset, so a deliberate manual choice is never overridden. No backend change: the dropdown
-  remains the single source of truth for `TransferRequest.originState`, so the existing
-  `tool_fetch` → `lookupTaxReciprocity` path is completely unaffected.
-- **Verified live** with Playwright: auto-selects on typed/pasted text; a prior manual selection
-  survives further typing; resetting the dropdown re-arms detection; and — the one that actually
-  matters — submitted a scenario relying purely on auto-detection (dropdown never manually
-  touched) and confirmed the real POST body sent `originState:"Crestwood"`, with the response's
-  `taxOwed` reflecting genuine reciprocity math, not a guess.
+  origin states on every `input` event. No backend change: the dropdown remains the single
+  source of truth for `TransferRequest.originState`, so the existing `tool_fetch` →
+  `lookupTaxReciprocity` path is completely unaffected.
+- **Revised after initial version shipped**: the first cut only filled the dropdown once (never
+  overrode a non-empty value), which meant pasting a *new* question over an old one left a stale,
+  now-wrong state selected — the field wasn't empty, so re-detection never re-armed. Changed to a
+  full sync instead: every `input` event re-derives the match and unconditionally sets
+  `originState` to it, or clears it to `""` if the current text no longer mentions a recognized
+  state. This does mean a manual dropdown click can later be overwritten by further typing — a
+  deliberate tradeoff, since "the dropdown always reflects what's actually in the text" turned
+  out to be the behavior actually wanted.
+- **Verified live** with Playwright, including real keystroke-by-keystroke typing (not just
+  `fill()`) and select-all-then-Backspace: auto-selects on typed/pasted text; pasting a whole new
+  question re-syncs to the new state without any manual reset; clearing the text (via typing,
+  paste-over, or backspace) clears the dropdown back to "— any —"; text with no recognized state
+  leaves it clear. One test-only gotcha hit along the way: reading the `<select>`'s value
+  immediately after a synthetic keypress can catch it before Angular's zoneless change-detection
+  flush lands — a real `input` event fires synchronously and correctly (confirmed by attaching a
+  raw `addEventListener` and inspecting `event.inputType`), the DOM update just needs a tick to
+  settle before asserting on it. Also confirmed end-to-end: a scenario relying purely on
+  auto-detection (dropdown never manually touched) sent the real POST body with
+  `originState:"Crestwood"`, with the response's `taxOwed` reflecting genuine reciprocity math.
 
 ## Fixed — active lien in VEHICLE_RECORD tool data ignored when not also mentioned in question text
 - **Found while building an MCP-tool-coverage test.** Asked for a test case exercising every MCP

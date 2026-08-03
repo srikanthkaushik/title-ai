@@ -57,14 +57,13 @@ export class App implements OnDestroy {
   }
 
   // Origin State drives a real MCP tool call (lookupTaxReciprocity) — it isn't decorative, so
-  // typing the state in the Scenario text alone doesn't reach the agent. Auto-fill it from text
-  // so examiners don't have to state it twice; never override an explicit manual selection.
+  // typing the state in the Scenario text alone doesn't reach the agent. Keeps the dropdown in
+  // sync with the Scenario text on every keystroke/paste — re-detects and overwrites (or clears,
+  // if the current text no longer mentions a recognized state) rather than only filling once,
+  // so pasting a whole new question doesn't leave a stale state from a previous one behind.
   detectOriginState(text: string): void {
-    if (this.originState) return;
     const match = this.originStates.find(s => new RegExp(`\\b${s}\\b`, 'i').test(text));
-    if (match) {
-      this.originState = match;
-    }
+    this.originState = match ?? '';
   }
 
   submit(): void {
