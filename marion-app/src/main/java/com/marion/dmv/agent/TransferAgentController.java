@@ -60,6 +60,14 @@ public class TransferAgentController {
         resumeData.put("supervisorNote", request.note() == null ? "" : request.note());
 
         return Mono.fromCallable(() -> {
+            // Pre-check instead of letting LangGraph4j's own resume path throw: distinguishes an
+            // unknown threadId (404) from one that exists but isn't at the gate right now — e.g.
+            // a double-submitted Approve/Deny, or a threadId that was never a referral (409).
+            var snapshot = graph.stateOf(config)
+                    .orElseThrow(() -> new UnknownThreadException(request.threadId()));
+            if (!AWAIT_SUPERVISOR_NODE.equals(snapshot.next())) {
+                throw new ThreadNotPausedException(request.threadId());
+            }
             graph.invoke(GraphInput.resume(resumeData), config);
             return toAgentResponse(config, request.threadId());
         })
@@ -117,7 +125,7 @@ public class TransferAgentController {
     }
 
     private AgentTransferResponse toAgentResponse(RunnableConfig config, String threadId) {
-        var snapshot = graph.getState(config);
+        var snapshot = graph.stateOf(config).orElseThrow(() -> new UnknownThreadException(threadId));
         String draftAnswer = snapshot.state().draftAnswer();
         if (draftAnswer.isBlank()) {
             throw new IllegalStateException("Agent graph produced no output");

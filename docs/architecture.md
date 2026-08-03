@@ -66,7 +66,7 @@ graph TD
 | `RetrievalService` | Hybrid retrieval: vector cosine + Postgres FTS; retrieves 3× target, reranks with LLM cross-encoder (reason-before-verdict, `SCORE:` pattern), returns top-N |
 | `McpToolService` | Lazy `DefaultMcpClient` with double-checked locking; degrades gracefully if MCP server is unreachable |
 | `TransferResponseParser` | Strips `//` and `/* */` comments from raw LLM output, extracts first `{…}` block, deserializes with Jackson 3 `FAIL_ON_UNKNOWN_PROPERTIES=false` |
-| `GlobalExceptionHandler` | `@RestControllerAdvice`; IAE → 422 `PARSE_FAILED`, ISE → 500 `AGENT_ERROR` |
+| `GlobalExceptionHandler` | `@RestControllerAdvice`; IAE → 422 `PARSE_FAILED`, `UnknownThreadException` → 404 `THREAD_NOT_FOUND`, `ThreadNotPausedException` → 409 `THREAD_NOT_PAUSED`, ISE → 500 `AGENT_ERROR` |
 | MCP server tools | Five `@McpTool` methods backed by PostgreSQL; auto-registered by Spring AI 2.0 |
 
 ## Ports and Dependencies

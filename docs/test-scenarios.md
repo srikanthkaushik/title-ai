@@ -368,7 +368,9 @@ conflict is the first thing to suspect.
 
 ---
 
-### G3 — Resuming an unknown or already-restarted threadId fails loudly
+### G3 — Resuming an unknown, already-restarted, or already-resolved threadId fails distinctly
+
+**G3a — never existed (404):**
 
 ```bash
 curl -s -X POST http://localhost:8080/api/transfer/query/agent/resume \
@@ -377,10 +379,22 @@ curl -s -X POST http://localhost:8080/api/transfer/query/agent/resume \
   -w "\n\nHTTP %{http_code}"
 ```
 
-**Expected:** HTTP 500 `{"error":"AGENT_ERROR","detail":"Missing Checkpoint!"}` — `MemorySaver` has
-no record of this thread. This is the concrete, testable face of the "in-process only" limitation:
-restart `marion-app` between G1's pause and resume steps and the real `threadId` will fail exactly
-this way too.
+**Expected:** HTTP 404 `{"error":"THREAD_NOT_FOUND","detail":"No run found for threadId: ..."}` —
+`ThreadTrackingMemorySaver` has no checkpoint at all for this thread. This is the concrete, testable
+face of the "in-process only" limitation: restart `marion-app` between a pause and its resume and
+the real `threadId` will fail exactly this way too. `GET /query/agent/{threadId}` returns the same
+404 for the same reason.
+
+**G3b — exists, but already resolved (409):** submit any Group B lien/brand scenario through
+`/query/agent`, resume it once (APPROVED or DENIED — either works, `200`), then resume the *same*
+`threadId` a second time with the same or different decision.
+
+**Expected:** the first resume returns `200`. The second returns HTTP 409
+`{"error":"THREAD_NOT_PAUSED","detail":"threadId ... is not currently awaiting a supervisor
+decision"}` — the checkpoint exists, but the graph is already at `END`, not parked at
+`await_supervisor`. Distinguishes a genuinely bad/garbage `threadId` (404) from a stale or
+double-submitted one (409) — e.g. a supervisor double-clicking Approve, or two supervisors racing
+to resolve the same Supervisor Queue card.
 
 ---
 

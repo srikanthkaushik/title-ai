@@ -186,11 +186,10 @@ Initial version resumed straight to END without the LLM ever seeing the decision
   one extra LLM call, not zero and not a retry storm. Deny produces a blocked response with the
   supervisor's note folded into `conditionalNote`.
 - **Known limitations (prototype scope, not bugs):**
-  - Resuming a `threadId` MemorySaver has never seen (unknown, or lost to an app restart) fails
-    as a generic 500 `AGENT_ERROR` / "Missing Checkpoint!" — not a distinct 404/409.
-  - The published design-deck artifact ("A Flag Is Not a Control") still says resume "adds zero
-    re-inference cost" — accurate when written, **no longer accurate** now that resume triggers a
-    second GENERATE pass. Not updated yet; flagged to the user, their call whether to revise it.
+  - The published design-deck artifact ("A Flag Is Not a Control") originally said resume "adds
+    zero re-inference cost" — that stopped being true once resume started triggering a second
+    GENERATE pass. **Fixed** — the artifact's footer was revised (and later extended again to cite
+    the cross-session Supervisor Queue proof) to match; same URL, republished in place.
 
 - **Follow-up — `GET /api/transfer/pending-referrals` (server-side audit of paused runs):**
   - Closes the "no list pending referrals" gap: previously the client's history entry was the only
@@ -353,8 +352,19 @@ POST /api/transfer/query/agent
   that's the one case it's supposed to. Re-ran an unrecognized-origin-state scenario (Westbrook) —
   correctly names the state, not a brand or lien.
 
+- **Fixed — distinct 404/409 for resuming a bad `threadId`, instead of a generic 500**:
+  - `UnknownThreadException` (new) — threadId has no checkpoint at all (never existed, or
+    `ThreadTrackingMemorySaver` lost it across an app restart, since it's in-process only). Maps to
+    `404 THREAD_NOT_FOUND`.
+  - `ThreadNotPausedException` (new) — threadId exists but isn't currently parked at
+    `await_supervisor` (already resumed once, e.g. a double-submitted Approve/Deny, or never a
+    referral in the first place). Maps to `409 THREAD_NOT_PAUSED`.
+  - `resume()` now pre-checks via `graph.stateOf(config)` (an `Optional`, unlike `getState()` which
+    throws) before calling `invoke()`, so both cases are caught explicitly rather than falling
+    through to LangGraph4j's own internal `IllegalStateException` messages. `toAgentResponse()` (used
+    by `queryAgent`/`resume`/`agentStatus`) does the same for the "unknown thread" case.
+  - **Verified live**: a garbage UUID → `404 THREAD_NOT_FOUND`; resuming the same real `threadId`
+    twice → `200` the first time, `409 THREAD_NOT_PAUSED` the second.
+
 ## Next steps (not started)
-- Distinct 404/409 for resuming an unknown/expired `threadId`, instead of the current generic 500
 - Consider: structured output parsing with retry vs current regex guard
-- Untracked in working tree, not yet committed or triaged: `title.pdf`, scratch logs
-  (`eval-baseline.log`, `eval-run2.log`, `mcp-server*.log`)
