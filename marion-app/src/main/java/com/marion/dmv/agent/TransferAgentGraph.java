@@ -191,28 +191,32 @@ public class TransferAgentGraph {
 
                 .addNode("retrieve", node_async(state ->
                     retrieveTimer.record(() -> {
+                        log.info("[AGENT] retrieve: searching corpus for question ({} chars)",
+                                state.question().length());
                         List<RetrievalResult> hits = retrievalService.retrieveAndRerank(state.question());
+                        log.info("[AGENT] retrieve: found {} chunk(s), sources={}", hits.size(),
+                                hits.stream().map(RetrievalResult::source).toList());
                         return Map.of("context", buildContext(hits));
                     })
                 ))
 
                 .addNode("tool_fetch", node_async(state ->
                     toolFetchTimer.record(() -> {
+                        log.info("[AGENT] tool_fetch: starting (vin={}, originState={}, transferType={}, county={})",
+                                state.vehicleVin().orElse("-"), state.originState().orElse("-"),
+                                state.transferType().orElse("-"), state.county().orElse("-"));
                         Map<String, String> toolData = new LinkedHashMap<>();
                         state.vehicleVin()
                                 .flatMap(mcpToolService::lookupTitleLien)
                                 .ifPresent(r -> toolData.put("VEHICLE_RECORD", r));
-                        state.originState().ifPresent(os -> {
-                            Optional<String> result = mcpToolService.lookupTaxReciprocity(os);
-                            log.debug("[TOOL_FETCH] lookupTaxReciprocity({}) -> {}", os,
-                                    result.map(r -> r.substring(0, Math.min(r.length(), 120))).orElse("EMPTY"));
-                            result.ifPresent(r -> toolData.put("TAX_RECIPROCITY", r));
-                        });
+                        state.originState()
+                                .flatMap(mcpToolService::lookupTaxReciprocity)
+                                .ifPresent(r -> toolData.put("TAX_RECIPROCITY", r));
                         if (state.transferType().isPresent() && state.county().isPresent()) {
                             mcpToolService.lookupFees(state.transferType().get(), state.county().get())
                                     .ifPresent(r -> toolData.put("FEE_SCHEDULE", r));
                         }
-                        log.debug("[TOOL_FETCH] toolData keys: {}", toolData.keySet());
+                        log.info("[AGENT] tool_fetch: complete, toolData keys={}", toolData.keySet());
                         return Map.of("toolData", formatToolData(toolData));
                     })
                 ))
@@ -220,6 +224,7 @@ public class TransferAgentGraph {
                 .addNode("generate", node_async(state ->
                     generateTimer.record(() -> {
                         String userPrompt = buildUserPrompt(state);
+                        log.info("[AGENT] generate: calling LLM (cycle {})", state.cycleCount() + 1);
                         String answer = chatModel.chat(
                                 List.of(SystemMessage.from(SYSTEM_PROMPT), UserMessage.from(userPrompt))
                         ).aiMessage().text();
@@ -231,8 +236,12 @@ public class TransferAgentGraph {
                             var parsed = TransferResponseParser.parse(answer);
                             updates.put("parseError", "");
                             updates.put("supervisorReferral", parsed.supervisorReferral());
+                            log.info("[AGENT] generate: LLM responded ({} chars), parsed OK, supervisorReferral={}",
+                                    answer.length(), parsed.supervisorReferral());
                         } catch (IllegalArgumentException e) {
                             updates.put("parseError", e.getMessage());
+                            log.info("[AGENT] generate: LLM responded ({} chars), PARSE FAILED: {}",
+                                    answer.length(), e.getMessage());
                         }
                         return updates;
                     })
@@ -275,15 +284,19 @@ public class TransferAgentGraph {
                 ? FIRST_PASS_MAX_CYCLES + POST_REVIEW_MAX_CYCLES
                 : FIRST_PASS_MAX_CYCLES;
 
+        String decision;
         if (!state.parseError().isEmpty() && state.cycleCount() < cycleCap) {
-            return "generate";
+            decision = "generate";
+        } else if (!postReview && state.parseError().isEmpty() && state.supervisorReferral()) {
+            // Once a supervisor decision has been folded in, never re-pause — the decision
+            // already happened. Only a fresh (non-postReview) referral routes to await_supervisor.
+            decision = "await";
+        } else {
+            decision = "end";
         }
-        // Once a supervisor decision has been folded in, never re-pause — the decision already
-        // happened. Only a fresh (non-postReview) referral routes to await_supervisor.
-        if (!postReview && state.parseError().isEmpty() && state.supervisorReferral()) {
-            return "await";
-        }
-        return "end";
+        log.info("[AGENT] route: cycleCount={}, parseError={}, postReview={}, supervisorReferral={} -> {}",
+                state.cycleCount(), !state.parseError().isEmpty(), postReview, state.supervisorReferral(), decision);
+        return decision;
     }
 
     private static String buildContext(List<RetrievalResult> hits) {

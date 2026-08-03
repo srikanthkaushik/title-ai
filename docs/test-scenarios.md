@@ -548,6 +548,62 @@ sandwiched between the pending and final polls; that pattern means the race is b
 
 ---
 
+## Group H — MCP Tool Coverage
+
+Confirms the agent actually reaches every MCP tool it's wired to call — as opposed to the MCP
+server tools that exist but the agent has no path to (see PROJECT.md's "MCP server tools" list:
+7 tools total on the server, only 4 wrapped by `McpToolService`, and of those only 3 are ever
+called by `tool_fetch` — `checkCountyEmissions` is wrapped but unused; `decode_vin`,
+`lookup_fee_by_code`, and `check_inspection_stations` aren't reachable from the app at all).
+
+### H1 — One request exercising all 3 agent-reachable MCP tools
+
+| Field | Value |
+|---|---|
+| Scenario | `Customer purchased this vehicle in Crestwood for $22,000 and wants to title it in Marion.` |
+| VIN | `1CST0000001000001` (clean title, no lien, no brand) |
+| Origin State | `Crestwood` |
+| Transfer Type | `PURCHASE` |
+| County | `Marion County` |
+
+This combination is deliberately chosen so all three of `tool_fetch`'s conditional tool calls
+fire in a single request: VIN present → `lookup_title_lien`; Origin State present →
+`lookup_tax_reciprocity`; Transfer Type + County present → `lookup_fees`.
+
+**Expected:** `supervisorReferral=false` (clean VIN), `checklist` populated, `fees` matching the
+seeded schedule exactly (title $25, VIN $15, registration $45, emissions $35, total $120),
+`taxOwed` reflecting real Crestwood 6% reciprocity math (not a guess) — same live-verified
+result documented in PROJECT.md's "Origin State had to be typed twice" write-up.
+
+**Verify the actual tool round-trips, not just the final answer** — `grep "\[AGENT\]\|\[MCP\]"`
+in `marion-app`'s log output should show, in order:
+```
+[AGENT] retrieve: searching corpus for question (...)
+[AGENT] retrieve: found N chunk(s), sources=[...]
+[AGENT] tool_fetch: starting (vin=1CST0000001000001, originState=Crestwood, transferType=PURCHASE, county=Marion County)
+[MCP] agent calling tool 'lookup_title_lien' args={"vin":"1CST0000001000001"}
+[MCP] tool 'lookup_title_lien' returned: {...}
+[MCP] agent calling tool 'lookup_tax_reciprocity' args={"originState":"Crestwood"}
+[MCP] tool 'lookup_tax_reciprocity' returned: {...}
+[MCP] agent calling tool 'lookup_fees' args={"transferType":"PURCHASE","county":"Marion County"}
+[MCP] tool 'lookup_fees' returned: [...]
+[AGENT] tool_fetch: complete, toolData keys=[VEHICLE_RECORD, TAX_RECIPROCITY, FEE_SCHEDULE]
+[AGENT] generate: calling LLM (cycle 1)
+[AGENT] generate: LLM responded (... chars), parsed OK, supervisorReferral=false
+[AGENT] route: cycleCount=1, parseError=false, postReview=false, supervisorReferral=false -> end
+```
+Three `[MCP] agent calling tool` / `[MCP] tool ... returned` pairs, one per agent-reachable tool,
+nested inside a single `tool_fetch` start/complete pair — this is the concrete, log-level proof
+that all 3 tools were actually invoked, not just that the final JSON happened to look right.
+
+**Regression history:** building this exact scenario is what surfaced the active-lien detection
+bug (see B6) — testing tool coverage with a VIN that has data NOT restated in the question text
+is what makes gaps like that visible in the first place. If this scenario's tool coverage or log
+trail ever changes shape, check whether `tool_fetch`'s conditional calls in
+`TransferAgentGraph.java` still match this combination of inputs before assuming a deeper bug.
+
+---
+
 ## Metrics Verification
 
 After running several scenarios, check node latency breakdown:

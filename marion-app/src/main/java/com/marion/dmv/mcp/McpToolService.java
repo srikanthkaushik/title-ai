@@ -51,6 +51,7 @@ public class McpToolService implements AutoCloseable {
     }
 
     private Optional<String> callTool(String toolName, String argumentsJson) {
+        log.info("[MCP] agent calling tool '{}' args={}", toolName, argumentsJson);
         try {
             ToolExecutionRequest request = ToolExecutionRequest.builder()
                     .name(toolName)
@@ -61,11 +62,17 @@ public class McpToolService implements AutoCloseable {
                 log.warn("MCP tool {} returned error: {}", toolName, result.resultText());
                 return Optional.empty();
             }
+            log.info("[MCP] tool '{}' returned: {}", toolName, truncate(result.resultText()));
             return Optional.ofNullable(result.resultText());
         } catch (Exception e) {
             log.warn("MCP tool {} unavailable ({}): {}", toolName, e.getClass().getSimpleName(), e.getMessage());
             return Optional.empty();
         }
+    }
+
+    private static String truncate(String text) {
+        if (text == null) return "null";
+        return text.length() <= 200 ? text : text.substring(0, 200) + "...(truncated)";
     }
 
     private McpClient getClient() {
