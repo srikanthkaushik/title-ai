@@ -48,6 +48,7 @@
                 [(ngModel)]="question"
                 name="question"
                 placeholder="Describe the transfer scenario — title type, lien status, origin state, purchase price, etc."
+                (input)="detectOriginState($any($event.target).value)"
                 (keydown.control.enter)="submit()"
                 required>
               </textarea>

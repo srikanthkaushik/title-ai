@@ -381,6 +381,25 @@ the next attempt doesn't have to re-derive it.
   `admin-rule-2-1-transfer-procedures.md`), now with the full diagnosis in a comment instead of a
   one-line "baseline note" — verified both docs still reliably satisfy it after the content edit.
 
+## Fixed — Origin State had to be typed twice (Scenario text AND the dropdown)
+- **User-reported**: the Examiner form's Origin State dropdown isn't decorative — `tool_fetch`
+  only calls `mcpToolService.lookupTaxReciprocity(originState)` when the structured field is
+  present (`TransferAgentGraph.java:205`). Typing "relocating from Crestwood" in the Scenario
+  text alone left that field empty, so the tax-reciprocity MCP call (and the
+  `*** TAX COMPUTATION ANCHORS ***` banner built specifically to stop qwen2.5:7b from
+  hallucinating rates) never fired unless the examiner *also* clicked the dropdown.
+- Fixed client-side only (`marion-ui/src/app/app.ts`/`app.html`) — `detectOriginState()` scans
+  the Scenario textarea's live text (word-boundary, case-insensitive) against the four known
+  origin states on every `input` event, and auto-selects the dropdown, but only while it's still
+  unset, so a deliberate manual choice is never overridden. No backend change: the dropdown
+  remains the single source of truth for `TransferRequest.originState`, so the existing
+  `tool_fetch` → `lookupTaxReciprocity` path is completely unaffected.
+- **Verified live** with Playwright: auto-selects on typed/pasted text; a prior manual selection
+  survives further typing; resetting the dropdown re-arms detection; and — the one that actually
+  matters — submitted a scenario relying purely on auto-detection (dropdown never manually
+  touched) and confirmed the real POST body sent `originState:"Crestwood"`, with the response's
+  `taxOwed` reflecting genuine reciprocity math, not a guess.
+
 ## Fixed — active lien in VEHICLE_RECORD tool data ignored when not also mentioned in question text
 - **Found while building an MCP-tool-coverage test.** Asked for a test case exercising every MCP
   tool the agent uses; while verifying it, tried a VIN seeded with `lien_status: ACTIVE` where the

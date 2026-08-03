@@ -56,6 +56,17 @@ export class App implements OnDestroy {
     this.stopPolling();
   }
 
+  // Origin State drives a real MCP tool call (lookupTaxReciprocity) — it isn't decorative, so
+  // typing the state in the Scenario text alone doesn't reach the agent. Auto-fill it from text
+  // so examiners don't have to state it twice; never override an explicit manual selection.
+  detectOriginState(text: string): void {
+    if (this.originState) return;
+    const match = this.originStates.find(s => new RegExp(`\\b${s}\\b`, 'i').test(text));
+    if (match) {
+      this.originState = match;
+    }
+  }
+
   submit(): void {
     if (!this.question.trim()) return;
 
