@@ -65,6 +65,18 @@ public class TransferAgentController {
         .subscribeOn(Schedulers.boundedElastic());
     }
 
+    // Read-only status check for a single thread. Doesn't invoke the graph — just re-reads the
+    // checkpoint, same as toAgentResponse does right after invoke()/resume(). Exists so a client
+    // that submitted a referral (and is showing "Awaiting Supervisor Decision") can poll for
+    // completion after a *different* session resolves it via the Supervisor Queue — without this,
+    // the originating tab has no way to learn the run finished and sits stuck indefinitely.
+    @GetMapping(value = "/query/agent/{threadId}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<AgentTransferResponse> agentStatus(@PathVariable String threadId) {
+        RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+        return Mono.fromCallable(() -> toAgentResponse(config, threadId))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     // Server-side audit of every run currently paused at await_supervisor. MemorySaver never
     // forgets a threadId (we never call graph.release()), so this scans all threads it has ever
     // seen and filters to the ones whose state snapshot is still parked at the gate node.

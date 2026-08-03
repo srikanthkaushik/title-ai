@@ -436,21 +436,35 @@ to stand in for two different people:
    tab in the navbar. Within ~4s (poll interval) the card from step 1 appears — question, referral
    reason, form, and a note field — with no action taken in window B to "find" it.
 3. In window B, add a note and click **Approve**. The card disappears from window B's queue.
-4. Back in window A: nothing updates automatically (Window A never polls `/pending-referrals`, only
-   its own history) — this is expected. Refresh window A's page or re-select the history entry via
-   `selectHistory` is not wired to re-fetch server state, so window A's copy of the response stays
-   stale until a new `/query/agent` or `/query/agent/resume` call is made from *that* session. Confirm
-   this by hitting `http://localhost:8080/api/transfer/pending-referrals` directly (or from window
-   B's queue, which shows "No referrals awaiting review.") — the resolution genuinely happened
-   server-side even though window A's local state hasn't refreshed to show it.
+4. Back in window A, **without refreshing or clicking anything**: within ~4s the amber "Awaiting
+   Supervisor Decision" card disappears on its own, replaced by "Supervisor decision recorded for
+   this run — no further action needed," and the response below it updates to reflect the decision.
 
 **Expected:** the referral is creatable in one session and fully resolvable from a completely
-independent session that was never told the `threadId` — this is the actual point of the panel: a
-supervisor doesn't need to be the same person/browser/tab as the examiner who hit the exception.
-Automated equivalent (two independent Playwright `BrowserContext`s, no shared cookies/storage) has
-been run and passes: session A pauses, session B discovers and approves without ever receiving the
-`threadId` from A directly (only by reading it back off A's own `/query/agent` response for
-assertion purposes — B's own flow only ever uses `/pending-referrals`).
+independent session that was never told the `threadId`, and the *originating* session reflects the
+resolution on its own — this is the actual point of the panel: a supervisor doesn't need to be the
+same person/browser/tab as the examiner who hit the exception, and the examiner doesn't need to
+manually re-check either. Automated equivalent (two independent Playwright `BrowserContext`s, no
+shared cookies/storage) has been run and passes: session A submits and pauses (captures its own
+`threadId` off its own `/query/agent` response, for assertion purposes only — its own app code never
+sees B's actions), session B discovers and approves via `/pending-referrals` without ever receiving
+the `threadId` from A directly, and session A's UI clears its pending card and shows "decision
+recorded" with zero manual action in that tab (via `GET /query/agent/{threadId}` polling — see
+`App.startPolling()`).
+
+**Regression note:** window A's auto-update did not exist originally — it was added after live
+testing showed the Examiner tab getting stuck showing a stale pending card forever when resolved
+from a separate session (see PROJECT.md "Examiner tab was stuck if resolved from a different
+session"). If this regresses, check that `submit()` and `selectHistory()` still call
+`startPolling()` for a pending `threadId`, and that `GET /query/agent/{threadId}` still exists.
+
+**Separately observed during this testing (not a bug in the polling mechanism itself):** on one
+approve run, qwen2.5:7b's second GENERATE pass didn't fully apply the APPROVED instructions —
+`supervisorReferral` stayed `true` and `checklist` stayed `null` instead of resolving, even with the
+prompt's override line in place. The auto-update mechanism correctly reflected whatever the model
+actually returned; this is LLM instruction-following variance, the same risk class G2's note already
+flagged for DENIED, now also seen on APPROVE. Worth re-running a few times if debugging this area —
+don't assume a single failed run means the polling broke.
 
 ---
 

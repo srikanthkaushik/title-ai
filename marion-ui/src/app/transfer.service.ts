@@ -19,6 +19,12 @@ export class TransferService {
     return this.http.post<AgentTransferResponse>(this.resumeUrl, request);
   }
 
+  // Read-only status check, used to detect a resume that happened from a different session
+  // (e.g. the Supervisor Queue) while this session is still showing the pending card.
+  status(threadId: string): Observable<AgentTransferResponse> {
+    return this.http.get<AgentTransferResponse>(`${this.url}/${threadId}`);
+  }
+
   pendingReferrals(): Observable<PendingReferral[]> {
     return this.http.get<PendingReferral[]>(this.pendingReferralsUrl);
   }

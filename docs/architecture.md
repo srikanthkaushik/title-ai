@@ -9,7 +9,7 @@ graph TD
     subgraph marion-app ["marion-app — Spring WebFlux :8080"]
         PII["PiiGuardrailFilter\n@Order(-100)\nblocks SSN / card patterns"]
         TC["TransferController\nPOST /api/transfer/query"]
-        TAC["TransferAgentController\nPOST /api/transfer/query/agent\nPOST /api/transfer/query/agent/resume\nGET /api/transfer/pending-referrals"]
+        TAC["TransferAgentController\nPOST /api/transfer/query/agent\nGET /api/transfer/query/agent/{threadId}\nPOST /api/transfer/query/agent/resume\nGET /api/transfer/pending-referrals"]
         Graph["LangGraph4j Agent\nRETRIEVE → TOOL_FETCH → GENERATE → await_supervisor"]
         Checkpoint[("ThreadTrackingMemorySaver\nin-process checkpoint\nkeyed by threadId")]
         Retrieval["RetrievalService\nhybrid vector + FTS + LLM rerank"]
@@ -59,7 +59,7 @@ graph TD
 |---|---|
 | `PiiGuardrailFilter` | WebFlux `WebFilter` at `@Order(-100)`; regex-blocks SSN and card patterns on `/api/transfer/**`; returns 400 before the request reaches any controller |
 | `TransferController` | Single-shot endpoint; retrieval + MCP tools + LLM in one blocking `Mono.fromCallable`; retries once on parse failure with specific Jackson error in prompt |
-| `TransferAgentController` | Delegates to the compiled LangGraph4j graph; issues a fresh `threadId` per `/query/agent` call; returns `AgentTransferResponse` (wraps `TransferResponse` + `awaitingSupervisorDecision` + `threadId`); `/query/agent/resume` re-enters a paused checkpoint by `threadId`; `/pending-referrals` audits every thread currently parked at the gate |
+| `TransferAgentController` | Delegates to the compiled LangGraph4j graph; issues a fresh `threadId` per `/query/agent` call; returns `AgentTransferResponse` (wraps `TransferResponse` + `awaitingSupervisorDecision` + `threadId`); `/query/agent/resume` re-enters a paused checkpoint by `threadId`; `GET /query/agent/{threadId}` is a read-only status check (no invoke, just re-reads the checkpoint) used for polling; `/pending-referrals` audits every thread currently parked at the gate |
 | `TransferAgentGraph` | Defines RETRIEVE → TOOL_FETCH → GENERATE → `await_supervisor` graph with a conditional retry edge and a conditional referral-pause edge; each node timed via `marion.agent.node` Micrometer metric |
 | `await_supervisor` node | No-op gate node; its only purpose is a named `interruptBefore()` target. The graph halts here — after GENERATE's output is committed, before this node's body runs — whenever `supervisorReferral=true` |
 | `ThreadTrackingMemorySaver` | LangGraph4j in-process `BaseCheckpointSaver` (subclasses `MemorySaver` to expose its otherwise-`protected` thread cache via `threadIds()`); persists graph state keyed by `threadId` so a paused run can be resumed later in the same process, and lets `/pending-referrals` enumerate every thread it has ever seen. **Not durable across app restarts** — a real deployment needs a Postgres-backed saver (not shipped by LangGraph4j) |
@@ -87,6 +87,7 @@ graph LR
 | `POST` | `/api/transfer/query` | `TransferController` | `TransferResponse` (JSON, 200) |
 | `POST` | `/api/transfer/query/agent` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — `{response, awaitingSupervisorDecision, threadId}` |
 | `POST` | `/api/transfer/query/agent/resume` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — resumes a paused `threadId` with `{decision, note}`; triggers one more GENERATE pass |
+| `GET` | `/api/transfer/query/agent/{threadId}` | `TransferAgentController` | `AgentTransferResponse` (JSON, 200) — read-only status check, no invoke; used by the Examiner UI to poll for a resume that happened from a different session |
 | `GET` | `/api/transfer/pending-referrals` | `TransferAgentController` | `List<PendingReferral>` (JSON, 200) — `{threadId, question, referralReason, referralForm}` for every thread currently paused at `await_supervisor` |
 | `POST` | `/api/transfer/stream` | `TransferController` | SSE phase/token/result events (non-agent path; no checkpointing, so no HITL pause) |
 | `POST` | `/api/ingest/reset?confirm=true` | `IngestController` | wipes + reseeds corpus |
@@ -247,6 +248,15 @@ sequenceDiagram
   the referral still shows up and can be resolved cross-session. Verified with two independent Playwright
   `BrowserContext`s: session A submits and pauses, session B (never told the `threadId` by session A) sees
   the card via polling, approves it, and session A's server state reflects the resolution.
+- **The Examiner view also polls, once it has a pending `threadId`.** Without this, a referral resolved
+  from the Supervisor Queue (or any other session) would leave the *originating* tab stuck showing a stale
+  "Awaiting Supervisor Decision" card forever — it had no signal the run had finished. `App.startPolling()`
+  hits the new read-only `GET /query/agent/{threadId}` every 4s while `pendingThreadId()` is set, and on
+  the first response with `awaitingSupervisorDecision=false` applies it exactly like `decide()`'s own
+  success handler would. Polling starts from `submit()`, from `selectHistory()` (if the selected entry is
+  still pending), and stops on any resolution or on submitting a new query. Verified live: approving from
+  a separate Playwright session made the originating tab's pending card clear and its "decision recorded"
+  message appear with no manual action in that tab.
 
 ---
 

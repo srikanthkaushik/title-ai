@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component, OnDestroy, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -12,7 +12,7 @@ import { SupervisorQueue } from './supervisor-queue';
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
-export class App {
+export class App implements OnDestroy {
   readonly originStates = ['Verdana', 'Crestwood', 'Halloway', 'Pembrook'];
   readonly counties = [
     'Marion County', 'Riverside County', 'Capital County',
@@ -47,12 +47,19 @@ export class App {
   readonly supervisorNote = signal<string>('');
   private activeHistoryId = signal<number | null>(null);
   private historyCounter = 0;
+  private pollHandle: ReturnType<typeof setInterval> | null = null;
+  private static readonly POLL_MS = 4000;
 
   constructor(private transferService: TransferService) {}
+
+  ngOnDestroy(): void {
+    this.stopPolling();
+  }
 
   submit(): void {
     if (!this.question.trim()) return;
 
+    this.stopPolling();
     this.loading.set(true);
     this.response.set(null);
     this.errorMessage.set(null);
@@ -78,6 +85,9 @@ export class App {
         this.response.set(agentResponse.response);
         this.phase.set('');
         this.pendingThreadId.set(agentResponse.awaitingSupervisorDecision ? agentResponse.threadId : null);
+        if (agentResponse.awaitingSupervisorDecision) {
+          this.startPolling(agentResponse.threadId);
+        }
         const id = ++this.historyCounter;
         this.activeHistoryId.set(id);
         this.history.update(h => [{
@@ -130,6 +140,7 @@ export class App {
       ...(this.supervisorNote().trim() && { note: this.supervisorNote().trim() })
     }).subscribe({
       next: (agentResponse) => {
+        this.stopPolling();
         this.response.set(agentResponse.response);
         this.pendingThreadId.set(null);
         this.deciding.set(false);
@@ -150,6 +161,7 @@ export class App {
   }
 
   selectHistory(entry: HistoryEntry): void {
+    this.stopPolling();
     this.response.set(entry.response);
     this.errorMessage.set(entry.errorMessage);
     this.errorCode.set(entry.errorCode);
@@ -160,6 +172,40 @@ export class App {
     this.pendingThreadId.set(entry.awaitingSupervisorDecision ? entry.threadId : null);
     this.supervisorNote.set('');
     this.activeHistoryId.set(entry.id);
+    if (entry.awaitingSupervisorDecision && entry.threadId) {
+      this.startPolling(entry.threadId);
+    }
+  }
+
+  // Detects a resume that happened from a different session (e.g. the Supervisor Queue) while
+  // this tab is still showing "Awaiting Supervisor Decision" — without this, the originating
+  // tab has no signal that the run finished and is stuck showing a stale pending card forever.
+  private startPolling(threadId: string): void {
+    this.stopPolling();
+    this.pollHandle = setInterval(() => {
+      this.transferService.status(threadId).subscribe({
+        next: (agentResponse) => {
+          if (agentResponse.awaitingSupervisorDecision) return;
+          this.stopPolling();
+          this.response.set(agentResponse.response);
+          this.pendingThreadId.set(null);
+          const id = this.activeHistoryId();
+          if (id !== null) {
+            this.history.update(h => h.map(e => e.id === id
+              ? { ...e, response: agentResponse.response, awaitingSupervisorDecision: false }
+              : e));
+          }
+        },
+        error: () => { /* transient poll failure — try again next tick */ }
+      });
+    }, App.POLL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollHandle !== null) {
+      clearInterval(this.pollHandle);
+      this.pollHandle = null;
+    }
   }
 
   saveNotes(): void {

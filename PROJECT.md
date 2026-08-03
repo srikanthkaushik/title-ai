@@ -231,6 +231,29 @@ Initial version resumed straight to END without the LLM ever seeing the decision
     directly) confirms the resolution. This is the first time the HITL loop has been demonstrated as
     a genuine two-role handoff rather than one browser session talking to itself.
 
+- **Follow-up — Examiner tab was stuck if resolved from a different session (user-reported)**:
+  - User tested cross-session HITL manually: had the Supervisor Queue open in one browser, approved
+    a referral there, and the *originating* Examiner tab never completed — it kept showing the
+    "Awaiting Supervisor Decision" card indefinitely, even though the run had actually finished
+    server-side. The Supervisor Queue polls; the Examiner view never did.
+  - Fixed by adding a read-only status endpoint, `GET /api/transfer/query/agent/{threadId}`
+    (`TransferAgentController.agentStatus`) — re-reads the checkpoint via `graph.getState(config)`
+    without invoking anything, same technique `toAgentResponse` already used internally.
+  - `App` (`app.ts`) now polls this endpoint every 4s whenever `pendingThreadId()` is set — started
+    from `submit()` and from `selectHistory()` (if the selected history entry is still pending),
+    stopped on any resolution (via this poll or a manual `decide()`) or on submitting a new query.
+  - **Verified live** with a Playwright test: two independent sessions, one submits and pauses, the
+    other approves via the Supervisor Queue with zero communication back to the first tab — the
+    first tab's pending card cleared and its "decision recorded" message appeared with no manual
+    refresh, confirming the poll alone drove the update.
+  - **Side observation, not a bug in this fix**: on one of the approve runs during this testing,
+    qwen2.5:7b's second GENERATE pass didn't fully apply the APPROVED instructions — it left
+    `supervisorReferral=true` and `checklist=null` instead of resolving them, even with the override
+    line in the post-review prompt block. This is the same class of risk anticipated (but, per the
+    existing G2 note, not yet observed) for DENIED — now also observed on APPROVE. Not investigated
+    further yet; if this recurs, it's a candidate for the same kind of explicit-instruction
+    hardening already applied elsewhere (e.g. the STEP 1 override line, the tax-rate banner).
+
 ## Key gotchas
 
 | Trap | Fix |
