@@ -310,6 +310,7 @@ Initial version resumed straight to END without the LLM ever seeing the decision
 | Native Windows `python3`/`node` vs Git Bash `/tmp` | They can resolve `/tmp/...` to different filesystems — a file `tee`'d to `/tmp/x.json` in Bash may throw `FileNotFoundError` when opened by a native `python3 -c "..."` in the same command. Extract JSON fields with `grep -o`/`sed` (same shell, same filesystem view) instead of shelling out to `python3` for one-liners |
 | `graph.getState(config).next() != gateNodeId` read from an independent request | Only means "finished" when read synchronously right after your own `invoke()`/`resume()` call — `invoke()` guarantees `next()` is either the interrupt point or null/END at that instant. A *separate* concurrent read (e.g. a polling endpoint) can catch a checkpoint mid-transition (past the gate, next node not yet run) and misreport "done" with stale state. Check for actual terminal `next() == null \|\| END.equals(next())` instead |
 | Shell variables don't persist across separate Bash tool calls | Each Bash invocation may run in a fresh shell — `$THREAD` set in one call is empty in the next. Keep a multi-step curl sequence (capture id → use id) in ONE Bash call, or you'll silently send empty/wrong values downstream |
+| `@GetMapping("/{filename}")` with a dotted value (`foo.md`) as the last path segment | Default Spring path matching treats the trailing dot as a format-suffix separator and strips it — the route silently never matches (`foo.md` → tries to bind `filename="foo"` and 404s with no useful signal, not even reaching the handler). Fix: `@GetMapping("/{filename:.+}")` to force the variable to greedily capture the extension too |
 
 ## Architecture
 
@@ -335,6 +336,58 @@ and `check_inspection_stations` aren't reachable from the app at all — server-
 - `lookup_fee_by_code(feeCode)` — single fee lookup *(not wrapped by McpToolService)*
 - `check_county_emissions(county)` — emissions requirement *(wrapped, never called by the agent)*
 - `check_inspection_stations(county, inspectionType)` — available stations *(not wrapped)*
+
+## Follow-up — Examiner UI: Metrics panel, visual redesign, Clear button, source links
+
+Five features added in one stretch. All verified live; all additive — no existing service,
+model, or backend logic changed except two new endpoints.
+
+- **Metrics panel** (`GET /api/metrics/summary`, `MetricsController` in a new
+  `com.marion.dmv.metrics` package): reads `MeterRegistry` directly and returns every
+  `marion.*` `Timer` it finds, dynamically — no hardcoded tag list, so it picked up two timers
+  not otherwise documented here (`marion.answer`, `marion.ingest`) alongside the three
+  agent-node timers and retrieval/reranking. A new "Metrics" tab (third, alongside
+  Examiner/Supervisor Queue) polls it every 3s and renders count/mean/max/total plus a
+  relative-share bar per timer, so the dominant node is visible at a glance.
+  **Known limitation surfaced, not fixed**: the "Max (ms)" column reads `0.0` for every timer
+  regardless of real activity — likely Micrometer's rolling-window max stat decaying/resetting
+  rather than a true all-time max. Noticed during the visual redesign pass; left alone since
+  it's a backend metrics question, out of scope for a UI pass.
+
+- **Visual redesign** (`styles.scss`, `index.html`, plus additive-only template edits):
+  retargeted Bootstrap 5.3's actual CSS custom properties — verified first against the
+  *compiled* `bootstrap.min.css` that some utilities (`.text-primary`, `.alert-danger`,
+  `.card`, `.form-control`) genuinely cascade from `:root` vars, while `.btn-*` variants
+  compile to static hex and needed direct component-scoped overrides instead (this was
+  confirmed by inspection before writing any CSS, not assumed). IBM Plex Serif/Sans/Mono
+  across display/body/data roles; a registry-ink/brass/stamp-red/ledger-green/amber palette
+  drawn from the DMV domain itself (cool grey-paper background, not the generic warm-cream
+  AI-design default). Signature element: `.stamp` — a bordered, slightly-rotated ink-stamp
+  mark that replaces generic Bootstrap badges for every status indicator (referral banner,
+  history badges, Supervisor Queue card headers), grounded in the domain since examiners
+  literally stamp determinations. Zero `.ts` files touched by this pass — confirmed via
+  `git diff` that `app.ts`'s only changes were leftover from the earlier (also
+  uncommitted-at-the-time) Metrics panel wiring, not the redesign itself.
+
+- **"Merlin" branding + empty state**: the empty-state icon is a circular brass "seal mark"
+  (double ring, serif "M"), replacing an emoji-pair icon (📄🔍) that was itself a quick
+  placeholder from before the design pass.
+
+- **Clear button**: `clear()` in `app.ts` resets the query form and results panel back to the
+  empty-state view, shown once a question has been answered (success or error). Mirrors what
+  `submit()` already resets at its own start, plus clears the form fields, which `submit()`
+  deliberately doesn't (it needs them to build the request). `history` (Recent Queries) is
+  untouched by design. Verified from both a successful answer and a PII-detection error.
+
+- **Source links** (`GET /api/corpus/{filename:.+}`, new `CorpusController` in the existing
+  `ingestion` package): sources like `"admin-rule-9-fee-schedule.md"` now link to the real
+  corpus markdown, opening in a new tab. Filename is validated against the corpus directory
+  itself — extension check, no path traversal, must resolve and exist inside
+  `corpus.base-path` — since it comes from LLM-generated text, not a trusted form field.
+  Non-file citations the model sometimes produces (`"TAX_RECIPROCITY"`,
+  `"database lookup results"`) render as plain text instead of a dead link. Hit a genuine
+  Spring path-matching gotcha along the way (see gotchas table) — fixed with a `{filename:.+}`
+  regex constraint.
 
 ## Known quality issues (not system bugs)
 - Retrieval: `procedure-ch4-4-elt-conversion.md` doesn't surface in top-5 for the Verdana ELT
